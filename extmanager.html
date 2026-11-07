@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>扩展管理</title>
+<style>
+body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; margin: 20px; background: #f5f5f5; }
+h1 { font-size: 18px; color: #333; }
+.toolbar { margin-bottom: 16px; }
+button { padding: 6px 14px; margin-right: 8px; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+button:hover { background: #e8e8e8; }
+button.primary { background: #0078d4; color: #fff; border-color: #0078d4; }
+.ext-item { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 12px 16px; margin-bottom: 8px; display: flex; align-items: center; }
+.ext-name { font-size: 15px; font-weight: 600; flex: 1; }
+.ext-id { font-size: 11px; color: #999; margin-top: 2px; }
+.ext-actions { white-space: nowrap; }
+.status { color: #0a7; margin-left: 12px; font-size: 13px; }
+.disabled .ext-name { color: #999; }
+.badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px; margin-left: 8px; }
+.badge.on { background: #d4edda; color: #155724; }
+.badge.off { background: #f8d7da; color: #721c24; }
+</style>
+</head>
+<body>
+<h1>扩展管理</h1>
+<div class="toolbar">
+  <button class="primary" onclick="install()">安装扩展(选目录)</button>
+  <button onclick="refresh()">刷新</button>
+  <span id="status" class="status"></span>
+</div>
+<div id="list"></div>
+<script>
+function send(msg) {
+  return chrome.webview.postMessage(msg);
+}
+function refresh() {
+  send({method: 'list'});
+}
+function install() {
+  send({method: 'install'});
+}
+function toggle(id, enabled) {
+  send({method: 'toggle', id: id, enabled: enabled});
+}
+function remove(id, name) {
+  if (confirm('确定删除扩展 "' + name + '"？')) send({method: 'remove', id: id});
+}
+function options(id) {
+  send({method: 'options', id: id});
+}
+chrome.webview.addEventListener('message', function(e) {
+  var data = JSON.parse(e.data);
+  if (data.method === 'list') {
+    renderList(data.extensions);
+  } else if (data.method === 'status') {
+    document.getElementById('status').textContent = data.text;
+    setTimeout(function(){ document.getElementById('status').textContent=''; }, 5000);
+  }
+});
+function renderList(exts) {
+  var html = '';
+  if (exts.length === 0) {
+    html = '<p style="color:#999">暂无扩展。点击"安装扩展"选择包含 .crx 文件的目录。</p>';
+  }
+  for (var i = 0; i < exts.length; i++) {
+    var e = exts[i];
+    html += '<div class="ext-item' + (e.enabled ? '' : ' disabled') + '">';
+    html += '<div style="flex:1"><div class="ext-name">' + e.name;
+    html += '<span class="badge ' + (e.enabled ? 'on' : 'off') + '">' + (e.enabled ? '已启用' : '已禁用') + '</span>';
+    html += '</div><div class="ext-id">' + e.id + '</div></div>';
+    html += '<div class="ext-actions">';
+    if (e.optionsPage) html += '<button onclick="options(\'' + e.id + '\')">选项</button>';
+    html += '<button onclick="toggle(\'' + e.id + '\',' + (!e.enabled) + ')">' + (e.enabled ? '禁用' : '启用') + '</button>';
+    html += '<button onclick="remove(\'' + e.id + '\',\'' + e.name.replace(/'/g,"\\'") + '\')">删除</button>';
+    html += '</div></div>';
+  }
+  document.getElementById('list').innerHTML = html;
+}
+refresh();
+</script>
+</body>
+</html>

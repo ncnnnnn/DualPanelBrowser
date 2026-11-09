@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Web.WebView2.Core;
 
 namespace DualPanelBrowser;
 
@@ -11,6 +12,35 @@ public static class ExtensionManager
     public static string ManagedDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "DualPanelBrowser", "Extensions");
+
+    public static List<string> PendingExtDirs { get; set; } = new();
+    private static bool _loaded;
+    public static List<CoreWebView2BrowserExtension> LoadedExts { get; } = new();
+    public static Dictionary<string, string> ExtDirMapping { get; } = new(); // dir -> real ext id
+
+    public static async Task LoadExtensionsAsync(CoreWebView2 core)
+    {
+        if (_loaded) return;
+        _loaded = true;
+        var profile = core.Profile;
+        if (profile == null) return;
+        foreach (var dir in PendingExtDirs)
+        {
+            try
+            {
+                var ext = await profile.AddBrowserExtensionAsync(dir);
+                LoadedExts.Add(ext);
+                ExtDirMapping[dir] = ext.Id;
+                File.AppendAllText(Path.Combine(ManagedDir, "load.log"),
+                    $"OK: {Path.GetFileName(dir)} -> {ext.Id} {ext.Name}\n");
+            }
+            catch (Exception ex)
+            {
+                File.AppendAllText(Path.Combine(ManagedDir, "load.log"),
+                    $"FAIL: {Path.GetFileName(dir)} -> {ex.Message}\n");
+            }
+        }
+    }
 
     public static List<ExtensionInfo> ListExtensions()
     {

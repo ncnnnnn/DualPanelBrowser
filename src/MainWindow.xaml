@@ -11,10 +11,12 @@
             <ColumnDefinition Width="*"/>
         </Grid.ColumnDefinitions>
         <GridSplitter Grid.Column="1" Width="6" HorizontalAlignment="Center" VerticalAlignment="Stretch" Background="#FFCCCCCC"/>
-        <Border x:Name="LeftBorder" Grid.Column="0" BorderBrush="Transparent" BorderThickness="2" CornerRadius="4">
+        <Border x:Name="LeftBorder" Grid.Column="0" BorderBrush="Transparent" BorderThickness="2" CornerRadius="4"
+                MouseDown="Pane_MouseDown">
             <local:BrowserPane x:Name="LeftPane"/>
         </Border>
-        <Border x:Name="RightBorder" Grid.Column="2" BorderBrush="Transparent" BorderThickness="2" CornerRadius="4">
+        <Border x:Name="RightBorder" Grid.Column="2" BorderBrush="Transparent" BorderThickness="2" CornerRadius="4"
+                MouseDown="Pane_MouseDown">
             <local:BrowserPane x:Name="RightPane"/>
         </Border>
     </Grid>

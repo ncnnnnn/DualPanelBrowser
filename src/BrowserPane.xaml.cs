@@ -19,20 +19,43 @@ public partial class BrowserPane : UserControl
     private WebView2? _extMgrWv;
 
     public event EventHandler? StateChanged;
+    public event EventHandler? FocusChanged;
 
     public BrowserPane()
     {
         InitializeComponent();
         Tabs.SelectionChanged += (_, _) =>
         {
-            if (Current?.Source is { } src)
-                AddressBox.Text = src.ToString();
+            var wv = Current;
+            string u = "";
+            if (wv?.CoreWebView2 != null)
+                u = wv.CoreWebView2.Source ?? "";
+            else if (wv?.Source != null)
+                u = wv.Source.ToString();
+            AddressBox.Text = (u == "about:blank" || u == "about:config" || u.StartsWith("data:text/html") || string.IsNullOrEmpty(u)) ? "" : u;
+            NotifyStateChanged();
         };
     }
 
     public void Attach(CoreWebView2Environment env)
     {
         _env = env;
+    }
+
+    private void UserControl_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        FocusChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void TabBar_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        FocusChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void TabBar_PreviewMouseLeftDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount == 2)
+            AddTab("about:blank");
     }
 
     public WebView2? Current
@@ -66,6 +89,7 @@ public partial class BrowserPane : UserControl
         Tabs.Items.Add(tab);
         Tabs.SelectedItem = tab;
         AddressBox.Text = url == "about:blank" ? "" : url;
+        AddressBox.Focus();
 
         _ = InitAsync(wv, tab, title, url);
         close.Click += (_, _) => CloseTab(tab);
@@ -75,17 +99,55 @@ public partial class BrowserPane : UserControl
     private async Task InitAsync(WebView2 wv, TabItem tab, TextBlock title, string url)
     {
         await wv.EnsureCoreWebView2Async(_env);
+        await ExtensionManager.LoadExtensionsAsync(wv.CoreWebView2);
+        wv.GotFocus += (_, _) => FocusChanged?.Invoke(this, EventArgs.Empty);
+        wv.CoreWebView2.WebMessageReceived += (_, e) =>
+        {
+            if (e.TryGetWebMessageAsString() == "__focus__")
+                FocusChanged?.Invoke(this, EventArgs.Empty);
+        };
         wv.CoreWebView2.NewWindowRequested += (_, e) =>
         {
             e.Handled = true;
-            AddTab(e.Uri);
+            // 拦截扩展自动弹出的欢迎页/安装页
+            if (!e.Uri.StartsWith("chrome-extension://"))
+                AddTab(e.Uri);
         };
         wv.CoreWebView2.DocumentTitleChanged += (_, _) =>
             title.Text = wv.CoreWebView2.DocumentTitle;
+        wv.CoreWebView2.NavigationStarting += (_, _) =>
+        {
+            Dispatcher.InvokeAsync(() =>
+            {
+                ProgressBar.BeginAnimation(WidthProperty, null);
+                ProgressBar.Width = 0;
+                var anim = new System.Windows.Media.Animation.DoubleAnimation(0, ActualWidth,
+                    TimeSpan.FromSeconds(3)) { EasingFunction = new System.Windows.Media.Animation.QuadraticEase() };
+                ProgressBar.BeginAnimation(WidthProperty, anim);
+            });
+        };
         wv.CoreWebView2.NavigationCompleted += (_, _) =>
         {
+            Dispatcher.InvokeAsync(() =>
+            {
+                var anim = new System.Windows.Media.Animation.DoubleAnimation(ProgressBar.ActualWidth, ActualWidth,
+                    TimeSpan.FromMilliseconds(300));
+                anim.Completed += (_, _) =>
+                {
+                    var fade = new System.Windows.Media.Animation.DoubleAnimation(ActualWidth, 0,
+                        TimeSpan.FromMilliseconds(300));
+                    fade.Completed += (_, _) => ProgressBar.BeginAnimation(WidthProperty, null);
+                    ProgressBar.BeginAnimation(WidthProperty, fade);
+                };
+                ProgressBar.BeginAnimation(WidthProperty, anim);
+            });
             if (!AddressBox.IsFocused)
-                AddressBox.Text = wv.Source?.ToString() ?? "";
+            {
+                var u = wv.Source?.ToString() ?? "";
+                AddressBox.Text = (u == "about:blank" || u == "about:config") ? "" : u;
+            }
+            wv.CoreWebView2.ExecuteScriptAsync(
+                "document.addEventListener('mousedown',()=>{chrome.webview.postMessage('__focus__')},true);");
             NotifyStateChanged();
         };
         wv.CoreWebView2.Navigate(url);
@@ -144,26 +206,26 @@ public partial class BrowserPane : UserControl
                     await DoInstallAsync();
                     break;
                 case "toggle":
-                    var id = msg.GetProperty("id").GetString()!;
-                    var enabled = msg.GetProperty("enabled").GetBoolean();
-                    var ext = ExtensionManager.ListExtensions().FirstOrDefault(e => e.Id == id);
-                    if (ext != null) ExtensionManager.SetEnabled(ext, enabled);
+                    var tid = msg.GetProperty("id").GetString()!;
+                    var tenabled = msg.GetProperty("enabled").GetBoolean();
+                    var text = ExtensionManager.LoadedExts.FirstOrDefault(e => e.Id == tid);
+                    if (text != null) { await text.EnableAsync(tenabled); }
                     SendExtList();
-                    PostExtStatus(enabled ? "已启用，重启后生效" : "已禁用，重启后生效");
+                    PostExtStatus(tenabled ? "已启用" : "已禁用");
                     break;
                 case "remove":
                     var rid = msg.GetProperty("id").GetString()!;
-                    var rext = ExtensionManager.ListExtensions().FirstOrDefault(e => e.Id == rid);
-                    if (rext != null) ExtensionManager.Remove(rext);
+                    var rext = ExtensionManager.LoadedExts.FirstOrDefault(e => e.Id == rid);
+                    if (rext != null) { await rext.RemoveAsync(); ExtensionManager.LoadedExts.Remove(rext); }
                     SendExtList();
-                    PostExtStatus("已删除，重启后生效");
+                    PostExtStatus("已删除");
                     break;
                 case "options":
                     var oid = msg.GetProperty("id").GetString()!;
-                    var oext = ExtensionManager.ListExtensions().FirstOrDefault(e => e.Id == oid);
-                    if (oext != null && !string.IsNullOrEmpty(oext.OptionsPage))
+                    var op = GetOptionsPageForDir(oid);
+                    if (!string.IsNullOrEmpty(op))
                     {
-                        Dispatcher.Invoke(() => AddTab($"chrome-extension://{oext.Id}/{oext.OptionsPage}"));
+                        Dispatcher.Invoke(() => AddTab($"chrome-extension://{oid}/{op}"));
                     }
                     break;
             }
@@ -174,15 +236,37 @@ public partial class BrowserPane : UserControl
     private void SendExtList()
     {
         if (_extMgrWv?.CoreWebView2 == null) return;
-        var exts = ExtensionManager.ListExtensions().Select(e => new
+        var exts = ExtensionManager.LoadedExts.Select(e => new
         {
             id = e.Id,
             name = e.Name,
             enabled = e.IsEnabled,
-            optionsPage = e.OptionsPage
+            optionsPage = GetOptionsPageForDir(e.Id)
         }).ToList();
         var json = JsonSerializer.Serialize(new { method = "list", extensions = exts });
         _extMgrWv.CoreWebView2.PostWebMessageAsString(json);
+    }
+
+    private string GetOptionsPageForDir(string extId)
+    {
+        foreach (var pair in ExtensionManager.ExtDirMapping)
+        {
+            if (pair.Value == extId)
+            {
+                var manifestPath = Path.Combine(pair.Key, "manifest.json");
+                if (File.Exists(manifestPath))
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(File.ReadAllText(manifestPath));
+                        if (doc.RootElement.TryGetProperty("options_page", out var op))
+                            return op.GetString() ?? "";
+                    }
+                    catch { }
+                }
+            }
+        }
+        return "";
     }
 
     private void PostExtStatus(string text)
@@ -217,6 +301,7 @@ public partial class BrowserPane : UserControl
         if (Tabs.Items.Count <= 1)
         {
             wv?.CoreWebView2?.NavigateToString("<html></html>");
+            AddressBox.Text = "";
             NotifyStateChanged();
             return;
         }

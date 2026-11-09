@@ -10,6 +10,7 @@
     <AssemblyName>DualPanelBrowser</AssemblyName>
     <RootNamespace>DualPanelBrowser</RootNamespace>
     <Version>1.0.0</Version>
+    <ApplicationIcon>assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,7 +18,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="extmanager.html" CopyToOutputDirectory="PreserveNewest" />
+    <ApplicationDefinition Include="src\App.xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="src\extmanager.html" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

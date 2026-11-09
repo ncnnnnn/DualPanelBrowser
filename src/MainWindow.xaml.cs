@@ -43,39 +43,45 @@ public partial class MainWindow : Window
             }
         }
 
-        // 扫描所有解包好的扩展目录（跳过 .disabled），拼成 --load-extension
-        var loadPaths = new List<string>();
+        // 扫描所有解包好的扩展目录（跳过 .disabled）
+        var extDirs = new List<string>();
         foreach (var dir in Directory.GetDirectories(extDir))
         {
             if (dir.EndsWith(".disabled")) continue;
             if (File.Exists(Path.Combine(dir, "manifest.json")))
-                loadPaths.Add(dir);
+                extDirs.Add(dir);
         }
-        var args = "--enable-features=Extensions";
-        if (loadPaths.Count > 0)
-            args += " --load-extension=" + string.Join(",", loadPaths);
 
         var options = new CoreWebView2EnvironmentOptions
         {
-            AdditionalBrowserArguments = args,
             AreBrowserExtensionsEnabled = true
         };
         _env = await CoreWebView2Environment.CreateAsync(null, dataDir, options);
+        ExtensionManager.PendingExtDirs = extDirs;
         LeftPane.Attach(_env);
         RightPane.Attach(_env);
         LeftPane.StateChanged += (_, _) => SaveSession();
         RightPane.StateChanged += (_, _) => SaveSession();
-        LeftPane.GotFocus += (_, _) => UpdatePaneBorder();
-        RightPane.GotFocus += (_, _) => UpdatePaneBorder();
+        LeftPane.GotFocus += (_, _) => { _activePane = LeftPane; UpdatePaneBorder(); };
+        RightPane.GotFocus += (_, _) => { _activePane = RightPane; UpdatePaneBorder(); };
+        LeftPane.FocusChanged += (_, _) => { _activePane = LeftPane; UpdatePaneBorder(); };
+        RightPane.FocusChanged += (_, _) => { _activePane = RightPane; UpdatePaneBorder(); };
         RestoreSession();
+        Closed += (_, _) => SaveSession();
     }
+
+    private BrowserPane? _activePane;
 
     private void UpdatePaneBorder()
     {
-        var focused = FocusManager.GetFocusedElement(this) as DependencyObject;
-        var pane = PaneUnderFocus(focused);
-        LeftBorder.BorderBrush = pane == LeftPane ? System.Windows.Media.Brushes.DodgerBlue : System.Windows.Media.Brushes.Transparent;
-        RightBorder.BorderBrush = pane == RightPane ? System.Windows.Media.Brushes.DodgerBlue : System.Windows.Media.Brushes.Transparent;
+        LeftBorder.BorderBrush = _activePane == LeftPane ? System.Windows.Media.Brushes.DodgerBlue : System.Windows.Media.Brushes.Transparent;
+        RightBorder.BorderBrush = _activePane == RightPane ? System.Windows.Media.Brushes.DodgerBlue : System.Windows.Media.Brushes.Transparent;
+    }
+
+    private void Pane_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        _activePane = sender == LeftBorder ? LeftPane : RightPane;
+        UpdatePaneBorder();
     }
 
     private void RestoreSession()
@@ -85,8 +91,7 @@ public partial class MainWindow : Window
             if (File.Exists(SessionFile))
             {
                 var state = JsonSerializer.Deserialize<SessionState>(File.ReadAllText(SessionFile));
-                if (state != null &&
-                    ((state.Left?.Count ?? 0) > 0 || (state.Right?.Count ?? 0) > 0))
+                if (state != null)
                 {
                     LeftPane.LoadUrls(state.Left ?? new List<string>());
                     RightPane.LoadUrls(state.Right ?? new List<string>());
@@ -95,8 +100,8 @@ public partial class MainWindow : Window
             }
         }
         catch { }
-        LeftPane.AddTab("https://www.bing.com");
-        RightPane.AddTab("https://www.bing.com");
+        LeftPane.AddTab("about:blank");
+        RightPane.AddTab("about:blank");
     }
 
     private void SaveSession()

@@ -13,17 +13,20 @@ public static class ExtensionManager
 
     public static List<string> PendingExtDirs { get; set; } = new();
     private static bool _loaded;
+    private static TaskCompletionSource? _loadTcs;
     public static List<CoreWebView2BrowserExtension> LoadedExts { get; } = new();
     public static Dictionary<string, string> ExtDirMapping { get; } = new();
     public static bool IsLoading { get; private set; }
+    public static CoreWebView2Environment? SharedEnv { get; set; }
 
     public static async Task LoadExtensionsAsync(CoreWebView2 core)
     {
         if (_loaded) return;
         _loaded = true;
+        _loadTcs = new TaskCompletionSource();
         IsLoading = true;
         var profile = core.Profile;
-        if (profile == null) { IsLoading = false; return; }
+        if (profile == null) { IsLoading = false; _loadTcs.SetResult(); return; }
         foreach (var dir in PendingExtDirs)
         {
             try
@@ -41,7 +44,10 @@ public static class ExtensionManager
             }
         }
         IsLoading = false;
+        _loadTcs.SetResult();
     }
+
+    public static Task WaitForLoadAsync() => _loadTcs?.Task ?? Task.CompletedTask;
 
     public static List<ExtensionInfo> ListExtensions()
     {

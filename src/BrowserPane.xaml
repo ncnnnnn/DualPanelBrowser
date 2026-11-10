@@ -3,7 +3,6 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              PreviewMouseDown="UserControl_PreviewMouseDown">
     <UserControl.Resources>
-        <!-- 工具栏按钮样式 -->
         <Style x:Key="NavBtn" TargetType="Button">
             <Setter Property="Width" Value="34"/>
             <Setter Property="Height" Value="34"/>
@@ -25,8 +24,27 @@
                 </Setter.Value>
             </Setter>
         </Style>
-
-        <!-- 标签页样式 -->
+        <Style x:Key="ExtBtn" TargetType="Button">
+            <Setter Property="Width" Value="28"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="14">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#E0E0E0"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style TargetType="TabItem">
             <Setter Property="Template">
                 <Setter.Value>
@@ -62,48 +80,44 @@
     <DockPanel Margin="0">
         <!-- 工具栏 -->
         <Grid DockPanel.Dock="Top" Background="#F7F7F7">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="2"/>
-            </Grid.RowDefinitions>
-            <Grid Grid.Row="0" Margin="8,4,8,4">
+            <Grid Margin="8,4,8,4">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <Button x:Name="BtnBack" Grid.Column="0" Style="{StaticResource NavBtn}" Click="Back_Click" ToolTip="Back">
-                    <Path Data="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6z" Fill="#444" Width="18" Height="18"/>
+                    <TextBlock FontFamily="Segoe Fluent Icons" FontSize="16" Foreground="#5F6368" Text="&#xE72B;"/>
                 </Button>
                 <Button x:Name="BtnFwd" Grid.Column="1" Style="{StaticResource NavBtn}" Click="Fwd_Click" ToolTip="Forward">
-                    <Path Data="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z" Fill="#444" Width="18" Height="18"/>
+                    <TextBlock FontFamily="Segoe Fluent Icons" FontSize="16" Foreground="#5F6368" Text="&#xE72A;"/>
                 </Button>
                 <Button x:Name="BtnReload" Grid.Column="2" Style="{StaticResource NavBtn}" Click="Reload_Click" ToolTip="Reload">
-                    <Path Data="M17.65 6.35A7.958 7.958 0 0 0 12 4a8 8 0 1 0 7.74 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" Fill="#444" Width="16" Height="16"/>
+                    <TextBlock FontFamily="Segoe Fluent Icons" FontSize="15" Foreground="#5F6368" Text="&#xE72C;"/>
                 </Button>
-                <!-- 地址栏 -->
                 <Border Grid.Column="3" Background="White" CornerRadius="17" Height="34" VerticalAlignment="Center"
                         Margin="8,0" BorderBrush="#E0E0E0" BorderThickness="1">
                     <TextBox x:Name="AddressBox" Padding="12,0" FontSize="13" VerticalContentAlignment="Center"
                              KeyDown="AddressBox_KeyDown" BorderThickness="0" Background="Transparent"/>
                 </Border>
-                <Button x:Name="BtnClear" Grid.Column="4" Width="28" Height="28" Click="ClearAddr_Click" ToolTip="Clear"
-                        Background="Transparent" BorderThickness="0" Cursor="Hand" VerticalAlignment="Center">
-                    <Path Data="M18 6L6 18M6 6l12 12" Stroke="#999" StrokeThickness="1.5" Stretch="Uniform" Width="14" Height="14"/>
-                </Button>
-                <Button x:Name="BtnExt" Grid.Column="5" Style="{StaticResource NavBtn}" Click="Ext_Click" ToolTip="Extensions">
-                    <Path Data="M12 2l2.4 5 5.6.8-4 4 1 5.6L12 14.8 7 17.4l1-5.6-4-4 5.6-.8z" Fill="#555" Width="16" Height="16"/>
+                <Button x:Name="BtnExt" Grid.Column="4" Style="{StaticResource NavBtn}" Click="Ext_Click" ToolTip="Extensions">
+                    <TextBlock FontFamily="Segoe Fluent Icons" FontSize="15" Foreground="#5F6368" Text="&#xE7B8;"/>
                 </Button>
             </Grid>
-            <!-- 加载进度条 -->
-            <Border Grid.Row="1" Background="#E8E8E8">
-                <Border x:Name="ProgressBar" Width="0" HorizontalAlignment="Left" Background="#0078D4"/>
-            </Border>
         </Grid>
-        <!-- 标签栏 + 内容 -->
+        <!-- 加载进度条（地址栏下方） -->
+        <Border DockPanel.Dock="Top" Height="2" Background="Transparent">
+            <Border x:Name="ProgressBar" Background="#0078D4" Width="0" HorizontalAlignment="Left"/>
+        </Border>
+        <!-- 底部扩展状态栏（必须在TabControl之前声明） -->
+        <Border DockPanel.Dock="Bottom" Background="#F5F5F5" Height="32" BorderBrush="#E0E0E0" BorderThickness="0,1,0,0">
+            <Grid>
+                <TextBlock x:Name="StatusLeft" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="12" Foreground="#888"/>
+                <StackPanel x:Name="ExtBar" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            </Grid>
+        </Border>
         <TabControl x:Name="Tabs" Background="White">
             <TabControl.Template>
                 <ControlTemplate TargetType="TabControl">
@@ -119,7 +133,7 @@
                                     Click="NewTab_Click" ToolTip="New tab"
                                     Margin="8,0,4,0" BorderThickness="0" Background="Transparent"
                                     Cursor="Hand" VerticalContentAlignment="Center">
-                                <Path Data="M12 5v14M5 12h14" Stroke="#666" StrokeThickness="1.8" Stretch="Uniform" Width="16" Height="16"/>
+                                <TextBlock FontFamily="Segoe Fluent Icons" FontSize="14" Foreground="#666" Text="&#xE710;"/>
                             </Button>
                             <TabPanel x:Name="HeaderPanel" IsItemsHost="True"/>
                         </DockPanel>

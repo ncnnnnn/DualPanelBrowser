@@ -102,6 +102,7 @@ public partial class BrowserPane : UserControl
     private async Task InitAsync(WebView2 wv, TabItem tab, TextBlock title, string url)
     {
         await wv.EnsureCoreWebView2Async(_env);
+        ExtensionManager.SharedEnv ??= _env;
         // 先注册事件，再加载扩展，才能拦截扩展欢迎页
         wv.GotFocus += (_, _) => FocusChanged?.Invoke(this, EventArgs.Empty);
         wv.CoreWebView2.WebMessageReceived += (_, e) =>
@@ -124,24 +125,35 @@ public partial class BrowserPane : UserControl
                 e.Cancel = true;
             }
         };
-        // 扩展后台加载，不阻塞页面导航
-        _ = ExtensionManager.LoadExtensionsAsync(wv.CoreWebView2);
+        // 扩展后台异步加载，不阻塞页面（必须在UI线程调用AddBrowserExtensionAsync）
+        StatusLeft.Text = "扩展加载中... 0s";
+        var loadSw = System.Diagnostics.Stopwatch.StartNew();
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        timer.Tick += (_, _) =>
+        {
+            var n = ExtensionManager.LoadedExts.Count;
+            StatusLeft.Text = n == 0
+                ? $"扩展加载中... {loadSw.ElapsedMilliseconds / 1000}s"
+                : $"扩展加载中 ({n}/4)... {loadSw.ElapsedMilliseconds / 1000}s";
+        };
+        timer.Start();
+        _ = LoadExtAsync(wv, timer, loadSw);
         wv.CoreWebView2.DocumentTitleChanged += (_, _) =>
             title.Text = wv.CoreWebView2.DocumentTitle;
         wv.CoreWebView2.NavigationStarting += (_, _) =>
         {
-            Dispatcher.InvokeAsync(() =>
+            Dispatcher.Invoke(() =>
             {
                 ProgressBar.BeginAnimation(WidthProperty, null);
                 ProgressBar.Width = 0;
                 var anim = new System.Windows.Media.Animation.DoubleAnimation(0, ActualWidth,
-                    TimeSpan.FromSeconds(3)) { EasingFunction = new System.Windows.Media.Animation.QuadraticEase() };
+                    TimeSpan.FromSeconds(4)) { EasingFunction = new System.Windows.Media.Animation.QuadraticEase() };
                 ProgressBar.BeginAnimation(WidthProperty, anim);
             });
         };
         wv.CoreWebView2.NavigationCompleted += (_, _) =>
         {
-            Dispatcher.InvokeAsync(() =>
+            Dispatcher.Invoke(() =>
             {
                 var anim = new System.Windows.Media.Animation.DoubleAnimation(ProgressBar.ActualWidth, ActualWidth,
                     TimeSpan.FromMilliseconds(300));
@@ -154,6 +166,9 @@ public partial class BrowserPane : UserControl
                 };
                 ProgressBar.BeginAnimation(WidthProperty, anim);
             });
+        };
+        wv.CoreWebView2.NavigationCompleted += (_, _) =>
+        {
             if (!AddressBox.IsFocused)
             {
                 var u = wv.Source?.ToString() ?? "";
@@ -163,6 +178,15 @@ public partial class BrowserPane : UserControl
                 "document.addEventListener('mousedown',()=>{chrome.webview.postMessage('__focus__')},true);");
             NotifyStateChanged();
         };
+        // 手动触发进度条（首次导航时 ActualWidth 可能还没布局好）
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            ProgressBar.BeginAnimation(WidthProperty, null);
+            ProgressBar.Width = 0;
+            var anim = new System.Windows.Media.Animation.DoubleAnimation(0, ActualWidth,
+                TimeSpan.FromSeconds(4)) { EasingFunction = new System.Windows.Media.Animation.QuadraticEase() };
+            ProgressBar.BeginAnimation(WidthProperty, anim);
+        }), System.Windows.Threading.DispatcherPriority.Loaded);
         wv.CoreWebView2.Navigate(url);
     }
 
@@ -201,6 +225,19 @@ public partial class BrowserPane : UserControl
 
         var html = File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "extmanager.html"));
         wv.CoreWebView2.NavigateToString(html);
+        // 轮询推送扩展列表，直到扩展加载完成
+        _ = Task.Run(async () =>
+        {
+            for (int i = 0; i < 15; i++)
+            {
+                await Task.Delay(2000);
+                if (ExtensionManager.LoadedExts.Count > 0)
+                {
+                    Dispatcher.Invoke(SendExtList);
+                    break;
+                }
+            }
+        });
     }
 
     private async void OnExtMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs args)
@@ -249,15 +286,19 @@ public partial class BrowserPane : UserControl
     private void SendExtList()
     {
         if (_extMgrWv?.CoreWebView2 == null) return;
-        var exts = ExtensionManager.LoadedExts.Select(e => new
+        File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "extdebug.log"),
+            $"SendExtList called, LoadedExts count={ExtensionManager.LoadedExts.Count}\n");
+        var exts = ExtensionManager.LoadedExts.GroupBy(e => e.Id).Select(g => g.First()).Select(e => new
         {
             id = e.Id,
             name = e.Name,
             enabled = e.IsEnabled,
             optionsPage = GetOptionsPageForDir(e.Id)
         }).ToList();
-        var json = JsonSerializer.Serialize(new { method = "list", extensions = exts });
+        var json = System.Text.Json.JsonSerializer.Serialize(new { method = "list", extensions = exts });
         _extMgrWv.CoreWebView2.PostWebMessageAsString(json);
+        // 同时用JS直接注入，确保到达
+        _extMgrWv.CoreWebView2.ExecuteScriptAsync($"window.renderList && window.renderList({System.Text.Json.JsonSerializer.Serialize(exts)});");
     }
 
     private string GetOptionsPageForDir(string extId)
@@ -357,6 +398,156 @@ public partial class BrowserPane : UserControl
     private void Reload_Click(object sender, RoutedEventArgs e) => Current?.CoreWebView2?.Reload();
     private void ClearAddr_Click(object sender, RoutedEventArgs e) { AddressBox.Clear(); AddressBox.Focus(); }
     private void NewTab_Click(object sender, RoutedEventArgs e) => AddTab("about:blank");
+    private async Task LoadExtAsync(WebView2 wv, System.Windows.Threading.DispatcherTimer timer, System.Diagnostics.Stopwatch loadSw)
+    {
+        await ExtensionManager.LoadExtensionsAsync(wv.CoreWebView2);
+        await ExtensionManager.WaitForLoadAsync();
+        timer.Stop();
+        StatusLeft.Text = $"扩展加载完成，耗时 {loadSw.ElapsedMilliseconds / 1000}s";
+        PopulateExtBar();
+    }
+
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "...";
+
+    private void PopulateExtBar()
+    {
+        ExtBar.Children.Clear();
+        var loadingText = new TextBlock { Text = "扩展加载中...", FontSize = 12, Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x88,0x88,0x88)), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4,0,0,0) };
+        if (ExtensionManager.LoadedExts.Count == 0)
+        {
+            ExtBar.Children.Add(new TextBlock { Text = "无扩展", FontSize = 12, Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xAA,0xAA,0xAA)), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4,0,0,0) });
+            return;
+        }
+        foreach (var ext in ExtensionManager.LoadedExts)
+        {
+            var dir = ExtensionManager.ExtDirMapping.FirstOrDefault(x => x.Value == ext.Id).Key;
+            System.Windows.Media.ImageSource? icon = null;
+            // 优先用 assets 里的彩色图标
+            var assetDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets");
+            var nameLower = ext.Name.ToLower();
+            string? assetFile = null;
+            if (nameLower.Contains("adblock plus") || nameLower.Contains("abp")) assetFile = "ext_adblockplus.png";
+            else if (nameLower.Contains("ultimate")) assetFile = "ext_adblockultimate.png";
+            else if (nameLower.Contains("adguard")) assetFile = "ext_adguard.png";
+            else if (nameLower.Contains("ublock")) assetFile = "ext_ublock.png";
+            if (assetFile != null)
+            {
+                var ap = Path.Combine(assetDir, assetFile);
+                if (File.Exists(ap))
+                {
+                    var bmp = new System.Windows.Media.Imaging.BitmapImage();
+                    bmp.BeginInit();
+                    bmp.UriSource = new Uri(ap, UriKind.Absolute);
+                    bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                    bmp.EndInit();
+                    bmp.Freeze();
+                    icon = bmp;
+                }
+            }
+            // fallback: 从扩展 manifest 读
+            if (icon == null && !string.IsNullOrEmpty(dir))
+            {
+                var manifestPath = Path.Combine(dir, "manifest.json");
+                if (File.Exists(manifestPath))
+                {
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(manifestPath));
+                        var root = doc.RootElement;
+                        string? iconFile = null;
+                        if (root.TryGetProperty("icons", out var icons))
+                        {
+                            foreach (var size in new[] { "48", "128", "32", "16" })
+                            {
+                                if (icons.TryGetProperty(size, out var f)) { iconFile = f.GetString(); break; }
+                            }
+                        }
+                        if (iconFile != null)
+                        {
+                            var iconPath = Path.GetFullPath(Path.Combine(dir, iconFile.Replace('/', Path.DirectorySeparatorChar)));
+                            if (File.Exists(iconPath))
+                            {
+                                var bmp = new System.Windows.Media.Imaging.BitmapImage();
+                                bmp.BeginInit();
+                                bmp.UriSource = new Uri(iconPath, UriKind.Absolute);
+                                bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                                bmp.EndInit();
+                                bmp.Freeze();
+                                icon = bmp;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            var btn = new Button
+            {
+                Width = 30,
+                Height = 30,
+                Margin = new Thickness(2, 0, 0, 0),
+                ToolTip = ext.Name,
+                Content = icon != null
+                    ? new System.Windows.Controls.Image { Source = icon, Width = 20, Height = 20, Stretch = System.Windows.Media.Stretch.Uniform }
+                    : new TextBlock { Text = "🧩", FontSize = 16 },
+                Background = System.Windows.Media.Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+            btn.Style = (Style)FindResource("ExtBtn");
+            var menu = new ContextMenu();
+            var miOptions = new MenuItem { Header = "选项" };
+            var info = ExtensionManager.ListExtensions().FirstOrDefault(x => x.Id == ext.Id);
+            if (info != null && !string.IsNullOrEmpty(info.OptionsPage))
+            {
+                miOptions.Click += (_, _) => AddTab($"chrome-extension://{ext.Id}/{info.OptionsPage}");
+            }
+            else { miOptions.IsEnabled = false; }
+            var miPopup = new MenuItem { Header = ext.Name, IsEnabled = false };
+            var miManage = new MenuItem { Header = "管理扩展..." };
+            miManage.Click += (_, _) => Ext_Click(null!, null!);
+            menu.Items.Add(miPopup);
+            menu.Items.Add(new Separator());
+            menu.Items.Add(miOptions);
+            menu.Items.Add(miManage);
+            btn.ContextMenu = menu;
+            btn.Click += (_, e) =>
+            {
+                // 读取 popup 路径
+                var popupPath = "";
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, "manifest.json")));
+                        var root = doc.RootElement;
+                        if (root.TryGetProperty("action", out var act) && act.TryGetProperty("default_popup", out var pp))
+                            popupPath = pp.GetString() ?? "";
+                        else if (root.TryGetProperty("browser_action", out var ba) && ba.TryGetProperty("default_popup", out var pp2))
+                            popupPath = pp2.GetString() ?? "";
+                    }
+                    catch { }
+                }
+                if (!string.IsNullOrEmpty(popupPath))
+                {
+                    var url = $"chrome-extension://{ext.Id}/{popupPath}";
+                    var window = new ExtPopupWindow(url, ext.Name, ExtensionManager.SharedEnv!);
+                    var screen = System.Windows.SystemParameters.WorkArea;
+                    var btnPos = btn.PointToScreen(new System.Windows.Point(0, 0));
+                    window.Left = btnPos.X - window.Width + btn.ActualWidth;
+                    window.Top = btnPos.Y - window.Height - 4;
+                    if (window.Top < screen.Top) window.Top = btnPos.Y + btn.ActualHeight + 4;
+                    window.Show();
+                }
+                else if (info != null && !string.IsNullOrEmpty(info.OptionsPage))
+                {
+                    AddTab($"chrome-extension://{ext.Id}/{info.OptionsPage}");
+                }
+            };
+            ExtBar.Children.Add(btn);
+        }
+    }
+
     private void Ext_Click(object sender, RoutedEventArgs e) => _ = OpenExtManagerAsync();
 
     private void AddressBox_KeyDown(object sender, KeyEventArgs e)

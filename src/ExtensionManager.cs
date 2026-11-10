@@ -9,21 +9,21 @@ namespace DualPanelBrowser;
 
 public static class ExtensionManager
 {
-    public static string ManagedDir => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "DualPanelBrowser", "Extensions");
+    public static string ManagedDir => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Extensions");
 
     public static List<string> PendingExtDirs { get; set; } = new();
     private static bool _loaded;
     public static List<CoreWebView2BrowserExtension> LoadedExts { get; } = new();
-    public static Dictionary<string, string> ExtDirMapping { get; } = new(); // dir -> real ext id
+    public static Dictionary<string, string> ExtDirMapping { get; } = new();
+    public static bool IsLoading { get; private set; }
 
     public static async Task LoadExtensionsAsync(CoreWebView2 core)
     {
         if (_loaded) return;
         _loaded = true;
+        IsLoading = true;
         var profile = core.Profile;
-        if (profile == null) return;
+        if (profile == null) { IsLoading = false; return; }
         foreach (var dir in PendingExtDirs)
         {
             try
@@ -40,6 +40,7 @@ public static class ExtensionManager
                     $"FAIL: {Path.GetFileName(dir)} -> {ex.Message}\n");
             }
         }
+        IsLoading = false;
     }
 
     public static List<ExtensionInfo> ListExtensions()

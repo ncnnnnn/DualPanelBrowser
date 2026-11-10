@@ -72,14 +72,17 @@ public partial class BrowserPane : UserControl
     {
         var wv = new WebView2();
         var header = new StackPanel { Orientation = Orientation.Horizontal };
-        var title = new TextBlock { Text = "New tab", Margin = new Thickness(2, 0, 6, 0) };
+        var title = new TextBlock { Text = "New tab", Margin = new Thickness(0,0,8,0), FontSize = 12, MaxWidth = 160 };
         var close = new Button
         {
-            Content = "x",
-            Width = 18,
-            Height = 18,
+            Content = "✕",
+            Width = 16,
+            Height = 16,
             Padding = new Thickness(0),
-            FontSize = 10,
+            FontSize = 9,
+            Background = System.Windows.Media.Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Cursor = System.Windows.Input.Cursors.Hand,
             ToolTip = "Close tab"
         };
         var tab = new TabItem { Header = header };
@@ -99,7 +102,7 @@ public partial class BrowserPane : UserControl
     private async Task InitAsync(WebView2 wv, TabItem tab, TextBlock title, string url)
     {
         await wv.EnsureCoreWebView2Async(_env);
-        await ExtensionManager.LoadExtensionsAsync(wv.CoreWebView2);
+        // 先注册事件，再加载扩展，才能拦截扩展欢迎页
         wv.GotFocus += (_, _) => FocusChanged?.Invoke(this, EventArgs.Empty);
         wv.CoreWebView2.WebMessageReceived += (_, e) =>
         {
@@ -109,10 +112,20 @@ public partial class BrowserPane : UserControl
         wv.CoreWebView2.NewWindowRequested += (_, e) =>
         {
             e.Handled = true;
-            // 拦截扩展自动弹出的欢迎页/安装页
             if (!e.Uri.StartsWith("chrome-extension://"))
                 AddTab(e.Uri);
         };
+        wv.CoreWebView2.NavigationStarting += (s, e) =>
+        {
+            if (e.Uri.StartsWith("chrome-extension://") &&
+                (e.Uri.Contains("welcome") || e.Uri.Contains("installed") ||
+                 e.Uri.Contains("success") || e.Uri.Contains("onboard")))
+            {
+                e.Cancel = true;
+            }
+        };
+        // 扩展后台加载，不阻塞页面导航
+        _ = ExtensionManager.LoadExtensionsAsync(wv.CoreWebView2);
         wv.CoreWebView2.DocumentTitleChanged += (_, _) =>
             title.Text = wv.CoreWebView2.DocumentTitle;
         wv.CoreWebView2.NavigationStarting += (_, _) =>

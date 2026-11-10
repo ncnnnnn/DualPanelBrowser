@@ -12,9 +12,7 @@ public partial class MainWindow : Window
 {
     private CoreWebView2Environment _env = null!;
 
-    private string AppDir => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "DualPanelBrowser");
+    private string AppDir => AppDomain.CurrentDomain.BaseDirectory;
 
     private string SessionFile => Path.Combine(AppDir, "session.json");
 
@@ -54,7 +52,8 @@ public partial class MainWindow : Window
 
         var options = new CoreWebView2EnvironmentOptions
         {
-            AreBrowserExtensionsEnabled = true
+            AreBrowserExtensionsEnabled = true,
+            AdditionalBrowserArguments = "--enable-gpu-rasterization --disable-features=msSmartScreenProtection --disable-background-networking --disable-component-update"
         };
         _env = await CoreWebView2Environment.CreateAsync(null, dataDir, options);
         ExtensionManager.PendingExtDirs = extDirs;

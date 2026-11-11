@@ -19,11 +19,15 @@ public partial class BrowserPane : UserControl
     private CoreWebView2Environment _env = null!;
     private WebView2? _extMgrWv;
     private readonly Dictionary<WebView2, string> _tabUrls = new();
+    private readonly Dictionary<TabItem, WebView2> _tabWv = new();
     private readonly Dictionary<WebView2, System.Windows.Threading.DispatcherTimer> _tabTimers = new();
     private readonly Dictionary<WebView2, (TabItem tab, TextBlock title, string url)> _pending = new();
     private readonly HashSet<WebView2> _inited = new();
     private bool _batchAdding;
     private bool _preloadStarted;
+    private Grid? _viewHost;
+    private Grid ViewHost => _viewHost ??= Tabs.Template?.FindName("ViewHost", Tabs) as Grid
+        ?? throw new InvalidOperationException("ViewHost 未在 TabControl 模板中找到");
 
     public event EventHandler? StateChanged;
     public event EventHandler? FocusChanged;
@@ -78,7 +82,7 @@ public partial class BrowserPane : UserControl
     {
         get
         {
-            if (Tabs.SelectedItem is TabItem ti && ti.Content is WebView2 wv)
+            if (Tabs.SelectedItem is TabItem ti && _tabWv.TryGetValue(ti, out var wv))
                 return wv;
             return null;
         }
@@ -102,7 +106,7 @@ public partial class BrowserPane : UserControl
     {
         var cur = Current;
         foreach (TabItem ti in Tabs.Items)
-            if (ti.Content is WebView2 wv)
+            if (_tabWv.TryGetValue(ti, out var wv))
                 wv.Visibility = wv == cur ? Visibility.Visible : Visibility.Hidden;
     }
 
@@ -110,12 +114,12 @@ public partial class BrowserPane : UserControl
     {
         if (_preloadStarted) return;
         _preloadStarted = true;
-        await Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
+        await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
         while (true)
         {
             WebView2? next = null;
             foreach (TabItem ti in Tabs.Items)
-                if (ti.Content is WebView2 wv && _pending.ContainsKey(wv)) { next = wv; break; }
+                if (_tabWv.TryGetValue(ti, out var wv) && _pending.ContainsKey(wv)) { next = wv; break; }
             if (next == null) break;
             if (_pending.TryGetValue(next, out var p))
             {
@@ -158,7 +162,7 @@ public partial class BrowserPane : UserControl
     public void DetachTab(TabItem tab)
     {
         Trace($"DetachTab idx={Tabs.Items.IndexOf(tab)} count={Tabs.Items.Count}");
-        if (tab.Content is WebView2 dwv) ViewHost.Children.Remove(dwv);
+        if (_tabWv.TryGetValue(tab, out var dwv)) ViewHost.Children.Remove(dwv);
         Tabs.Items.Remove(tab);
         Trace($"DetachTab after count={Tabs.Items.Count} stillContains={Tabs.Items.Contains(tab)}");
     }
@@ -166,8 +170,10 @@ public partial class BrowserPane : UserControl
     public void AdoptTab(TabItem tab, BrowserPane source)
     {
         Trace($"AdoptTab from pane#{source.GetHashCode()} srcCount={source.Tabs.Items.Count} myCount={Tabs.Items.Count}");
-        if (tab.Content is WebView2 wv)
+        if (source._tabWv.TryGetValue(tab, out var wv))
         {
+            source._tabWv.Remove(tab);
+            _tabWv[tab] = wv;
             if (source._tabUrls.TryGetValue(wv, out var u)) { source._tabUrls.Remove(wv); _tabUrls[wv] = u; }
             if (source._tabTimers.TryGetValue(wv, out var t)) { source._tabTimers.Remove(wv); _tabTimers[wv] = t; }
             if (source._pending.TryGetValue(wv, out var p)) { source._pending.Remove(wv); _pending[wv] = p; }
@@ -175,7 +181,7 @@ public partial class BrowserPane : UserControl
         }
         tab.Tag = this;
         Tabs.Items.Add(tab);
-        if (tab.Content is WebView2 awv) ViewHost.Children.Add(awv);
+        if (_tabWv.TryGetValue(tab, out var awv)) ViewHost.Children.Add(awv);
         Tabs.SelectedItem = tab;
         SyncVisibility();
         Trace($"AdoptTab done myCount={Tabs.Items.Count} contains={Tabs.Items.Contains(tab)}");
@@ -244,7 +250,8 @@ public partial class BrowserPane : UserControl
         var tab = new TabItem { Header = header };
         header.Children.Add(title);
         header.Children.Add(close);
-        tab.Content = wv;
+        tab.Content = null;
+        _tabWv[tab] = wv;
         ViewHost.Children.Add(wv);
         _tabUrls[wv] = url;
         Tabs.Items.Add(tab);
@@ -369,7 +376,7 @@ public partial class BrowserPane : UserControl
             }), System.Windows.Threading.DispatcherPriority.Loaded);
         }
         wv.CoreWebView2.Navigate(url);
-        _ = BackgroundPreload();
+        BackgroundPreload();
     }
 
     private async Task OpenExtManagerAsync()
@@ -379,7 +386,7 @@ public partial class BrowserPane : UserControl
         {
             foreach (TabItem ti in Tabs.Items)
             {
-                if (ti.Content == _extMgrWv) { Tabs.SelectedItem = ti; return; }
+                if (_tabWv.TryGetValue(ti, out var ewv) && ewv == _extMgrWv) { Tabs.SelectedItem = ti; return; }
             }
             _extMgrWv = null;
         }
@@ -395,7 +402,8 @@ public partial class BrowserPane : UserControl
         var tab = new TabItem { Header = header };
         header.Children.Add(title);
         header.Children.Add(close);
-        tab.Content = wv;
+        tab.Content = null;
+        _tabWv[tab] = wv;
         ViewHost.Children.Add(wv);
         _tabUrls[wv] = "extmanager";
         Tabs.Items.Add(tab);
@@ -540,7 +548,7 @@ public partial class BrowserPane : UserControl
 
     public void CloseTab(TabItem tab)
     {
-        var wv = tab.Content as WebView2;
+        _tabWv.TryGetValue(tab, out var wv);
         Trace($"CloseTab entry idx={Tabs.Items.IndexOf(tab)} count={Tabs.Items.Count} wv={(wv == null ? "null" : "ok")}");
         if (wv == _extMgrWv) _extMgrWv = null;
         if (Tabs.Items.Count <= 1)
@@ -556,6 +564,7 @@ public partial class BrowserPane : UserControl
         Tabs.Items.Remove(tab);
         Trace($"CloseTab after remove count={Tabs.Items.Count} stillContains={Tabs.Items.Contains(tab)}");
         _tabUrls.Remove(wv!);
+        _tabWv.Remove(tab);
         _pending.Remove(wv!);
         _inited.Remove(wv!);
         ViewHost.Children.Remove(wv!);
@@ -574,7 +583,7 @@ public partial class BrowserPane : UserControl
         var list = new List<string>();
         foreach (TabItem ti in Tabs.Items)
         {
-            if (ti.Content is WebView2 wv)
+            if (_tabWv.TryGetValue(ti, out var wv))
             {
                 string? u = null;
                 try

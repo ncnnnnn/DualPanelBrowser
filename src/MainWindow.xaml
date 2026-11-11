@@ -7,16 +7,30 @@
     <Grid KeyDown="Window_KeyDown">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="1"/>
+            <ColumnDefinition Width="8"/>
             <ColumnDefinition Width="*"/>
         </Grid.ColumnDefinitions>
-        <GridSplitter Grid.Column="1" Width="3" HorizontalAlignment="Center" VerticalAlignment="Stretch" Background="#E0E0E0"/>
+        <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Background="#E0E0E0">
+            <GridSplitter.Style>
+                <Style TargetType="GridSplitter">
+                    <Style.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Background" Value="#0078D4"/>
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </GridSplitter.Style>
+        </GridSplitter>
         <Border x:Name="LeftBorder" Grid.Column="0" BorderBrush="Transparent" BorderThickness="2"
-                MouseDown="Pane_MouseDown">
+                AllowDrop="True"
+                MouseDown="Pane_MouseDown" MouseEnter="Pane_MouseEnter"
+                DragEnter="Pane_DragEnter" DragOver="Pane_DragOver" DragLeave="Pane_DragLeave" Drop="Pane_Drop">
             <local:BrowserPane x:Name="LeftPane"/>
         </Border>
         <Border x:Name="RightBorder" Grid.Column="2" BorderBrush="Transparent" BorderThickness="2"
-                MouseDown="Pane_MouseDown">
+                AllowDrop="True"
+                MouseDown="Pane_MouseDown" MouseEnter="Pane_MouseEnter"
+                DragEnter="Pane_DragEnter" DragOver="Pane_DragOver" DragLeave="Pane_DragLeave" Drop="Pane_Drop">
             <local:BrowserPane x:Name="RightPane"/>
         </Border>
     </Grid>

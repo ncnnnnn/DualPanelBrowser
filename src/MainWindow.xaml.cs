@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Input;
@@ -11,6 +12,13 @@ namespace DualPanelBrowser;
 public partial class MainWindow : Window
 {
     private CoreWebView2Environment _env = null!;
+    private System.Windows.Threading.DispatcherTimer? _hoverTimer;
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT pt);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X; public int Y; }
 
     private string AppDir => AppDomain.CurrentDomain.BaseDirectory;
 
@@ -20,6 +28,31 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         Loaded += OnLoaded;
+        Dispatcher.UnhandledException += (_, ev) =>
+        {
+            try
+            {
+                var ex = ev.Exception;
+                File.AppendAllText(Path.Combine(AppDir, "extdebug.log"),
+                    $"[{DateTime.Now:HH:mm:ss.fff}] [DISP] {ex}\n{ex.StackTrace}\n");
+                System.Windows.MessageBox.Show($"{ex.GetType().Name}: {ex.Message}\n\n{ex.StackTrace}",
+                    "未处理异常", MessageBoxButton.OK, MessageBoxImage.Error);
+                ev.Handled = true;
+            }
+            catch { }
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, ev) =>
+        {
+            try
+            {
+                var ex = ev.ExceptionObject as Exception;
+                File.AppendAllText(Path.Combine(AppDir, "extdebug.log"),
+                    $"[{DateTime.Now:HH:mm:ss.fff}] [UNHANDLED] {ex}\n{ex?.StackTrace}\n");
+                System.Windows.MessageBox.Show($"{ex?.GetType().Name}: {ex?.Message}\n\n{ex?.StackTrace}",
+                    "致命异常", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            catch { }
+        };
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -67,6 +100,11 @@ public partial class MainWindow : Window
         RightPane.FocusChanged += (_, _) => { _activePane = RightPane; UpdatePaneBorder(); };
         RestoreSession();
         Closed += (_, _) => SaveSession();
+
+        // 轮询光标位置激活面板（覆盖 WebView2 子 HWND 吞掉 WPF MouseEnter 的情况）
+        _hoverTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+        _hoverTimer.Tick += HoverTick;
+        _hoverTimer.Start();
     }
 
     private BrowserPane? _activePane;
@@ -81,6 +119,82 @@ public partial class MainWindow : Window
     {
         _activePane = sender == LeftBorder ? LeftPane : RightPane;
         UpdatePaneBorder();
+    }
+
+    private void Pane_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        var pane = sender == LeftBorder ? LeftPane : RightPane;
+        if (_activePane != pane)
+        {
+            _activePane = pane;
+            UpdatePaneBorder();
+        }
+        pane.FocusWebView();
+    }
+
+    private void HoverTick(object? sender, EventArgs e)
+    {
+        if (!IsLoaded) return;
+        if (!GetCursorPos(out var pt)) return;
+        BrowserPane? hover = null;
+        if (PointInPanel(LeftBorder, pt.X, pt.Y)) hover = LeftPane;
+        else if (PointInPanel(RightBorder, pt.X, pt.Y)) hover = RightPane;
+        if (hover != null && hover != _activePane)
+        {
+            _activePane = hover;
+            UpdatePaneBorder();
+            hover.FocusWebView();
+        }
+    }
+
+    private bool PointInPanel(System.Windows.Controls.Border b, int px, int py)
+    {
+        if (b.ActualWidth <= 0 || b.ActualHeight <= 0) return false;
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var top = b.PointToScreen(new System.Windows.Point(0, 0));
+        var rect = new Rect(top.X, top.Y, b.ActualWidth * dpi.DpiScaleX, b.ActualHeight * dpi.DpiScaleY);
+        return rect.Contains(px, py);
+    }
+
+    private void Pane_DragEnter(object sender, System.Windows.DragEventArgs e) => Pane_DragOver(sender, e);
+
+    private void Pane_DragOver(object sender, System.Windows.DragEventArgs e)
+    {
+        var payload = e.Data.GetData(typeof(TabDragPayload)) as TabDragPayload;
+        var target = sender == LeftBorder ? LeftPane : RightPane;
+        if (payload == null || payload.Source == target)
+        {
+            e.Effects = System.Windows.DragDropEffects.None;
+            HighlightDrop(sender as System.Windows.Controls.Border, false);
+        }
+        else
+        {
+            e.Effects = System.Windows.DragDropEffects.Move;
+            HighlightDrop(sender as System.Windows.Controls.Border, true);
+        }
+        e.Handled = true;
+    }
+
+    private void Pane_DragLeave(object sender, System.Windows.DragEventArgs e) => HighlightDrop(sender as System.Windows.Controls.Border, false);
+
+    private void Pane_Drop(object sender, System.Windows.DragEventArgs e)
+    {
+        var payload = e.Data.GetData(typeof(TabDragPayload)) as TabDragPayload;
+        var targetBorder = sender as System.Windows.Controls.Border;
+        HighlightDrop(targetBorder, false);
+        if (payload == null) return;
+        var target = targetBorder == LeftBorder ? LeftPane : RightPane;
+        if (payload.Source == target) return;
+        payload.Source.DetachTab(payload.Tab);
+        target.AdoptTab(payload.Tab, payload.Source);
+        e.Handled = true;
+    }
+
+    private void HighlightDrop(System.Windows.Controls.Border? border, bool on)
+    {
+        if (border == null) return;
+        border.BorderBrush = on ? System.Windows.Media.Brushes.DodgerBlue : System.Windows.Media.Brushes.Transparent;
+        if (!on) UpdatePaneBorder();
     }
 
     private void RestoreSession()

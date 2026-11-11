@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -17,6 +18,12 @@ public partial class BrowserPane : UserControl
 {
     private CoreWebView2Environment _env = null!;
     private WebView2? _extMgrWv;
+    private readonly Dictionary<WebView2, string> _tabUrls = new();
+    private readonly Dictionary<WebView2, System.Windows.Threading.DispatcherTimer> _tabTimers = new();
+    private readonly Dictionary<WebView2, (TabItem tab, TextBlock title, string url)> _pending = new();
+    private readonly HashSet<WebView2> _inited = new();
+    private bool _batchAdding;
+    private bool _preloadStarted;
 
     public event EventHandler? StateChanged;
     public event EventHandler? FocusChanged;
@@ -28,11 +35,20 @@ public partial class BrowserPane : UserControl
         {
             var wv = Current;
             string u = "";
-            if (wv?.CoreWebView2 != null)
-                u = wv.CoreWebView2.Source ?? "";
-            else if (wv?.Source != null)
-                u = wv.Source.ToString();
+            try
+            {
+                if (wv?.CoreWebView2 != null)
+                    u = wv.CoreWebView2.Source ?? "";
+                else if (wv?.Source != null)
+                    u = wv.Source.ToString();
+                else if (wv != null && _tabUrls.TryGetValue(wv, out var stored))
+                    u = stored;
+            }
+            catch (ObjectDisposedException) { u = ""; }
             AddressBox.Text = (u == "about:blank" || u == "about:config" || u.StartsWith("data:text/html") || string.IsNullOrEmpty(u)) ? "" : u;
+            SyncVisibility();
+            EnsureSelectedInit();
+            FocusWebView();
             NotifyStateChanged();
         };
     }
@@ -68,6 +84,146 @@ public partial class BrowserPane : UserControl
         }
     }
 
+    [DllImport("user32.dll")] private static extern IntPtr SetFocus(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern IntPtr GetFocus();
+
+    private void EnsureSelectedInit()
+    {
+        if (_batchAdding) return;
+        if (Current is WebView2 wv && _pending.TryGetValue(wv, out var p))
+        {
+            _pending.Remove(wv);
+            Trace($"EnsureSelectedInit url={p.url}");
+            _ = InitAsync(wv, p.tab, p.title, p.url);
+        }
+    }
+
+    private void SyncVisibility()
+    {
+        var cur = Current;
+        foreach (TabItem ti in Tabs.Items)
+            if (ti.Content is WebView2 wv)
+                wv.Visibility = wv == cur ? Visibility.Visible : Visibility.Hidden;
+    }
+
+    private async void BackgroundPreload()
+    {
+        if (_preloadStarted) return;
+        _preloadStarted = true;
+        await Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
+        while (true)
+        {
+            WebView2? next = null;
+            foreach (TabItem ti in Tabs.Items)
+                if (ti.Content is WebView2 wv && _pending.ContainsKey(wv)) { next = wv; break; }
+            if (next == null) break;
+            if (_pending.TryGetValue(next, out var p))
+            {
+                _pending.Remove(next);
+                Trace($"BackgroundPreload url={p.url}");
+                await InitAsync(next, p.tab, p.title, p.url);
+            }
+            await Task.Delay(600);
+        }
+    }
+
+    public void FocusWebView()
+    {
+        var wv = Current;
+        if (wv == null) return;
+        try
+        {
+            wv.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    wv.Focus();
+                    if (wv.Handle != IntPtr.Zero) SetFocus(wv.Handle);
+                    Trace($"FocusWebView handle=0x{wv.Handle.ToInt64():X} focus=0x{GetFocus().ToInt64():X}");
+                }
+                catch (ObjectDisposedException) { }
+            }), System.Windows.Threading.DispatcherPriority.Input);
+        }
+        catch (ObjectDisposedException) { }
+    }
+
+    private void RunOnCurrent(Action<CoreWebView2> action)
+    {
+        var wv = Current;
+        if (wv == null) return;
+        try { var c = wv.CoreWebView2; if (c != null) action(c); }
+        catch (ObjectDisposedException) { }
+    }
+
+    public void DetachTab(TabItem tab)
+    {
+        Trace($"DetachTab idx={Tabs.Items.IndexOf(tab)} count={Tabs.Items.Count}");
+        if (tab.Content is WebView2 dwv) ViewHost.Children.Remove(dwv);
+        Tabs.Items.Remove(tab);
+        Trace($"DetachTab after count={Tabs.Items.Count} stillContains={Tabs.Items.Contains(tab)}");
+    }
+
+    public void AdoptTab(TabItem tab, BrowserPane source)
+    {
+        Trace($"AdoptTab from pane#{source.GetHashCode()} srcCount={source.Tabs.Items.Count} myCount={Tabs.Items.Count}");
+        if (tab.Content is WebView2 wv)
+        {
+            if (source._tabUrls.TryGetValue(wv, out var u)) { source._tabUrls.Remove(wv); _tabUrls[wv] = u; }
+            if (source._tabTimers.TryGetValue(wv, out var t)) { source._tabTimers.Remove(wv); _tabTimers[wv] = t; }
+            if (source._pending.TryGetValue(wv, out var p)) { source._pending.Remove(wv); _pending[wv] = p; }
+            if (source._inited.Remove(wv)) _inited.Add(wv);
+        }
+        tab.Tag = this;
+        Tabs.Items.Add(tab);
+        if (tab.Content is WebView2 awv) ViewHost.Children.Add(awv);
+        Tabs.SelectedItem = tab;
+        SyncVisibility();
+        Trace($"AdoptTab done myCount={Tabs.Items.Count} contains={Tabs.Items.Contains(tab)}");
+        NotifyStateChanged();
+    }
+
+    private void Trace(string msg)
+    {
+        try { File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "extdebug.log"),
+            $"[{DateTime.Now:HH:mm:ss.fff}] pane#{GetHashCode()} {msg}\n"); } catch { }
+    }
+
+    private TabItem? _dragSource;
+    private System.Windows.Point _dragStart;
+
+    private void AttachTabDrag(TabItem tab)
+    {
+        tab.AllowDrop = true;
+        tab.Tag = this;
+        tab.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            _dragSource = tab;
+            _dragStart = e.GetPosition(Tabs);
+        };
+        tab.PreviewMouseMove += (_, e) =>
+        {
+            if (_dragSource != tab || e.LeftButton != MouseButtonState.Pressed) return;
+            var pos = e.GetPosition(Tabs);
+            if (Math.Abs(pos.X - _dragStart.X) < 4 && Math.Abs(pos.Y - _dragStart.Y) < 4) return;
+            var payload = new TabDragPayload { Source = (BrowserPane)tab.Tag!, Tab = tab };
+            DragDrop.DoDragDrop(Tabs, payload, System.Windows.DragDropEffects.Move);
+            _dragSource = null;
+        };
+        tab.Drop += (_, e) =>
+        {
+            if (_dragSource == null || _dragSource == tab) return;
+            var src = _dragSource;
+            int si = Tabs.Items.IndexOf(src);
+            int ti = Tabs.Items.IndexOf(tab);
+            if (si < 0 || ti < 0) return;
+            Tabs.Items.RemoveAt(si);
+            if (ti > si) ti--;
+            Tabs.Items.Insert(ti, src);
+            Tabs.SelectedItem = src;
+            e.Handled = true;
+        };
+    }
+
     public void AddTab(string url)
     {
         var wv = new WebView2();
@@ -89,32 +245,48 @@ public partial class BrowserPane : UserControl
         header.Children.Add(title);
         header.Children.Add(close);
         tab.Content = wv;
+        ViewHost.Children.Add(wv);
+        _tabUrls[wv] = url;
         Tabs.Items.Add(tab);
+        Trace($"AddTab url={url} count={Tabs.Items.Count}");
+        AttachTabDrag(tab);
+        _pending[wv] = (tab, title, url);
         Tabs.SelectedItem = tab;
         AddressBox.Text = url == "about:blank" ? "" : url;
         AddressBox.Focus();
 
-        _ = InitAsync(wv, tab, title, url);
-        close.Click += (_, _) => CloseTab(tab);
+        SyncVisibility();
+        EnsureSelectedInit();
+        close.Click += (_, _) =>
+        {
+            var owner = (BrowserPane?)tab.Tag;
+            Trace($"close click tagPane={owner?.GetHashCode()} ownerContains={owner != null && owner.Tabs.Items.Contains(tab)} ownerCount={owner?.Tabs.Items.Count}");
+            owner?.CloseTab(tab);
+        };
         NotifyStateChanged();
     }
 
     private async Task InitAsync(WebView2 wv, TabItem tab, TextBlock title, string url)
     {
-        await wv.EnsureCoreWebView2Async(_env);
+        if (_inited.Contains(wv)) return;
+        _inited.Add(wv);
+        Trace($"InitAsync start url={url}");
+        try { await wv.EnsureCoreWebView2Async(_env); }
+        catch (Exception ex) { Trace($"Ensure FAILED url={url} {ex}"); return; }
+        Trace($"InitAsync core ready url={url}");
         ExtensionManager.SharedEnv ??= _env;
         // 先注册事件，再加载扩展，才能拦截扩展欢迎页
-        wv.GotFocus += (_, _) => FocusChanged?.Invoke(this, EventArgs.Empty);
+        wv.GotFocus += (_, _) => ((BrowserPane?)tab.Tag)?.FocusChanged?.Invoke(this, EventArgs.Empty);
         wv.CoreWebView2.WebMessageReceived += (_, e) =>
         {
             if (e.TryGetWebMessageAsString() == "__focus__")
-                FocusChanged?.Invoke(this, EventArgs.Empty);
+                ((BrowserPane?)tab.Tag)?.FocusChanged?.Invoke(this, EventArgs.Empty);
         };
         wv.CoreWebView2.NewWindowRequested += (_, e) =>
         {
             e.Handled = true;
             if (!e.Uri.StartsWith("chrome-extension://"))
-                AddTab(e.Uri);
+                ((BrowserPane?)tab.Tag)?.AddTab(e.Uri);
         };
         wv.CoreWebView2.NavigationStarting += (s, e) =>
         {
@@ -137,11 +309,13 @@ public partial class BrowserPane : UserControl
                 : $"扩展加载中 ({n}/4)... {loadSw.ElapsedMilliseconds / 1000}s";
         };
         timer.Start();
+        _tabTimers[wv] = timer;
         _ = LoadExtAsync(wv, timer, loadSw);
         wv.CoreWebView2.DocumentTitleChanged += (_, _) =>
             title.Text = wv.CoreWebView2.DocumentTitle;
-        wv.CoreWebView2.NavigationStarting += (_, _) =>
+        wv.CoreWebView2.NavigationStarting += (_, navArgs) =>
         {
+            if (navArgs.Uri == "about:blank" || string.IsNullOrEmpty(navArgs.Uri)) return;
             Dispatcher.Invoke(() =>
             {
                 ProgressBar.BeginAnimation(WidthProperty, null);
@@ -169,6 +343,9 @@ public partial class BrowserPane : UserControl
         };
         wv.CoreWebView2.NavigationCompleted += (_, _) =>
         {
+            var src = wv.CoreWebView2?.Source ?? wv.Source?.ToString() ?? "";
+            Trace($"NavCompleted src={src}");
+            _tabUrls[wv] = src;
             if (!AddressBox.IsFocused)
             {
                 var u = wv.Source?.ToString() ?? "";
@@ -178,16 +355,21 @@ public partial class BrowserPane : UserControl
                 "document.addEventListener('mousedown',()=>{chrome.webview.postMessage('__focus__')},true);");
             NotifyStateChanged();
         };
-        // 手动触发进度条（首次导航时 ActualWidth 可能还没布局好）
-        Dispatcher.BeginInvoke(new Action(() =>
+        // 手动触发进度条（首次导航时 ActualWidth 可能还没布局好）；空白页不触发
+        if (url != "about:blank")
         {
-            ProgressBar.BeginAnimation(WidthProperty, null);
-            ProgressBar.Width = 0;
-            var anim = new System.Windows.Media.Animation.DoubleAnimation(0, ActualWidth,
-                TimeSpan.FromSeconds(4)) { EasingFunction = new System.Windows.Media.Animation.QuadraticEase() };
-            ProgressBar.BeginAnimation(WidthProperty, anim);
-        }), System.Windows.Threading.DispatcherPriority.Loaded);
+            Trace($"Navigate url={url}");
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                ProgressBar.BeginAnimation(WidthProperty, null);
+                ProgressBar.Width = 0;
+                var anim = new System.Windows.Media.Animation.DoubleAnimation(0, ActualWidth,
+                    TimeSpan.FromSeconds(4)) { EasingFunction = new System.Windows.Media.Animation.QuadraticEase() };
+                ProgressBar.BeginAnimation(WidthProperty, anim);
+            }), System.Windows.Threading.DispatcherPriority.Loaded);
+        }
         wv.CoreWebView2.Navigate(url);
+        _ = BackgroundPreload();
     }
 
     private async Task OpenExtManagerAsync()
@@ -214,9 +396,17 @@ public partial class BrowserPane : UserControl
         header.Children.Add(title);
         header.Children.Add(close);
         tab.Content = wv;
+        ViewHost.Children.Add(wv);
+        _tabUrls[wv] = "extmanager";
         Tabs.Items.Add(tab);
+        AttachTabDrag(tab);
         Tabs.SelectedItem = tab;
-        close.Click += (_, _) => CloseTab(tab);
+        close.Click += (_, _) =>
+        {
+            var owner = (BrowserPane?)tab.Tag;
+            Trace($"close click tagPane={owner?.GetHashCode()} ownerContains={owner != null && owner.Tabs.Items.Contains(tab)} ownerCount={owner?.Tabs.Items.Count}");
+            owner?.CloseTab(tab);
+        };
 
         await wv.EnsureCoreWebView2Async(_env);
         _extMgrWv = wv;
@@ -351,16 +541,26 @@ public partial class BrowserPane : UserControl
     public void CloseTab(TabItem tab)
     {
         var wv = tab.Content as WebView2;
+        Trace($"CloseTab entry idx={Tabs.Items.IndexOf(tab)} count={Tabs.Items.Count} wv={(wv == null ? "null" : "ok")}");
         if (wv == _extMgrWv) _extMgrWv = null;
         if (Tabs.Items.Count <= 1)
         {
-            wv?.CoreWebView2?.NavigateToString("<html></html>");
+            Trace("CloseTab last-tab blanked");
+            try { wv?.CoreWebView2?.NavigateToString("<html></html>"); }
+            catch (ObjectDisposedException) { }
             AddressBox.Text = "";
             NotifyStateChanged();
             return;
         }
+        if (wv != null && _tabTimers.TryGetValue(wv, out var t)) { t.Stop(); _tabTimers.Remove(wv); }
         Tabs.Items.Remove(tab);
-        wv?.Dispose();
+        Trace($"CloseTab after remove count={Tabs.Items.Count} stillContains={Tabs.Items.Contains(tab)}");
+        _tabUrls.Remove(wv!);
+        _pending.Remove(wv!);
+        _inited.Remove(wv!);
+        ViewHost.Children.Remove(wv!);
+        try { wv?.Dispose(); }
+        catch (ObjectDisposedException) { }
         NotifyStateChanged();
     }
 
@@ -376,7 +576,13 @@ public partial class BrowserPane : UserControl
         {
             if (ti.Content is WebView2 wv)
             {
-                var u = wv.Source?.ToString();
+                string? u = null;
+                try
+                {
+                    _tabUrls.TryGetValue(wv, out var stored);
+                    u = stored ?? wv.CoreWebView2?.Source ?? wv.Source?.ToString();
+                }
+                catch (ObjectDisposedException) { }
                 if (!string.IsNullOrEmpty(u) && u != "about:blank" &&
                     !u!.StartsWith("data:text/html") && !u!.Contains("extmanager"))
                     list.Add(u);
@@ -387,21 +593,32 @@ public partial class BrowserPane : UserControl
 
     public void LoadUrls(IEnumerable<string> urls)
     {
+        _batchAdding = true;
         foreach (var u in urls)
             AddTab(u);
+        _batchAdding = false;
+        EnsureSelectedInit();
         if (Tabs.Items.Count == 0)
             AddTab("about:blank");
     }
 
-    private void Back_Click(object sender, RoutedEventArgs e) => Current?.CoreWebView2?.GoBack();
-    private void Fwd_Click(object sender, RoutedEventArgs e) => Current?.CoreWebView2?.GoForward();
-    private void Reload_Click(object sender, RoutedEventArgs e) => Current?.CoreWebView2?.Reload();
+    private void Back_Click(object sender, RoutedEventArgs e) => RunOnCurrent(c => c.GoBack());
+    private void Fwd_Click(object sender, RoutedEventArgs e) => RunOnCurrent(c => c.GoForward());
+    private void Reload_Click(object sender, RoutedEventArgs e) => RunOnCurrent(c => c.Reload());
     private void ClearAddr_Click(object sender, RoutedEventArgs e) { AddressBox.Clear(); AddressBox.Focus(); }
     private void NewTab_Click(object sender, RoutedEventArgs e) => AddTab("about:blank");
     private async Task LoadExtAsync(WebView2 wv, System.Windows.Threading.DispatcherTimer timer, System.Diagnostics.Stopwatch loadSw)
     {
-        await ExtensionManager.LoadExtensionsAsync(wv.CoreWebView2);
-        await ExtensionManager.WaitForLoadAsync();
+        CoreWebView2? cw;
+        try { cw = wv.CoreWebView2; }
+        catch (ObjectDisposedException) { return; }
+        if (cw == null) return;
+        try
+        {
+            await ExtensionManager.LoadExtensionsAsync(cw);
+            await ExtensionManager.WaitForLoadAsync();
+        }
+        catch (ObjectDisposedException) { return; }
         timer.Stop();
         StatusLeft.Text = $"扩展加载完成，耗时 {loadSw.ElapsedMilliseconds / 1000}s";
         PopulateExtBar();
@@ -548,6 +765,16 @@ public partial class BrowserPane : UserControl
         }
     }
 
+    private void ExtMenu_Click(object sender, RoutedEventArgs e)
+    {
+        if (BtnExt.ContextMenu != null)
+        {
+            BtnExt.ContextMenu.PlacementTarget = BtnExt;
+            BtnExt.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+            BtnExt.ContextMenu.IsOpen = true;
+        }
+    }
+
     private void Ext_Click(object sender, RoutedEventArgs e) => _ = OpenExtManagerAsync();
 
     private void AddressBox_KeyDown(object sender, KeyEventArgs e)
@@ -560,8 +787,14 @@ public partial class BrowserPane : UserControl
             !text.StartsWith("about:", StringComparison.OrdinalIgnoreCase) &&
             !text.StartsWith("chrome-extension://", StringComparison.OrdinalIgnoreCase))
             text = "https://" + text;
-        Current?.CoreWebView2?.Navigate(text);
+        RunOnCurrent(c => c.Navigate(text));
     }
 
     private void NotifyStateChanged() => StateChanged?.Invoke(this, EventArgs.Empty);
+}
+
+public class TabDragPayload
+{
+    public BrowserPane Source = null!;
+    public TabItem Tab = null!;
 }

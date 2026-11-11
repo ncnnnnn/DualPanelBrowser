@@ -102,8 +102,13 @@
                     <TextBox x:Name="AddressBox" Padding="12,0" FontSize="13" VerticalContentAlignment="Center"
                              KeyDown="AddressBox_KeyDown" BorderThickness="0" Background="Transparent"/>
                 </Border>
-                <Button x:Name="BtnExt" Grid.Column="4" Style="{StaticResource NavBtn}" Click="Ext_Click" ToolTip="Extensions">
+                <Button x:Name="BtnExt" Grid.Column="4" Style="{StaticResource NavBtn}" Click="ExtMenu_Click" ToolTip="菜单">
                     <TextBlock FontFamily="Segoe Fluent Icons" FontSize="15" Foreground="#5F6368" Text="&#xE7B8;"/>
+                    <Button.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem x:Name="MiExt" Header="扩展" Click="Ext_Click"/>
+                        </ContextMenu>
+                    </Button.ContextMenu>
                 </Button>
             </Grid>
         </Grid>
@@ -135,9 +140,9 @@
                                     Cursor="Hand" VerticalContentAlignment="Center">
                                 <TextBlock FontFamily="Segoe Fluent Icons" FontSize="14" Foreground="#666" Text="&#xE710;"/>
                             </Button>
-                            <TabPanel x:Name="HeaderPanel" IsItemsHost="True"/>
+                            <TabPanel x:Name="HeaderPanel" IsItemsHost="True" AllowDrop="True"/>
                         </DockPanel>
-                        <ContentPresenter Grid.Row="1" ContentSource="SelectedContent"/>
+                        <Grid x:Name="ViewHost" Grid.Row="1" Background="White"/>
                     </Grid>
                 </ControlTemplate>
             </TabControl.Template>

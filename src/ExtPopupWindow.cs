@@ -7,6 +7,7 @@ namespace DualPanelBrowser;
 public partial class ExtPopupWindow : Window
 {
     private readonly WebView2 _web;
+    private bool _closed;
 
     public ExtPopupWindow(string url, string title, CoreWebView2Environment env, double width = 380, double height = 500)
     {
@@ -21,10 +22,19 @@ public partial class ExtPopupWindow : Window
         Content = _web;
         Loaded += async (_, _) =>
         {
-            await _web.EnsureCoreWebView2Async(env);
-            _web.CoreWebView2.Navigate(url);
+            try
+            {
+                await _web.EnsureCoreWebView2Async(env);
+                if (_closed) return;
+                _web.CoreWebView2.Navigate(url);
+            }
+            catch (ObjectDisposedException) { }
         };
         Deactivated += (_, _) => Close();
-        Closed += (_, _) => { _web.Dispose(); };
+        Closed += (_, _) =>
+        {
+            _closed = true;
+            try { _web.Dispose(); } catch { }
+        };
     }
 }

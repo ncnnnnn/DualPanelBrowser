@@ -3,3 +3,11 @@ obj/
 *.user
 .vs/
 *_wpftmp.csproj
+
+# 便携运行时数据（exe 同目录生成，不入库）
+Data/
+Extensions/
+session.json
+*.log
+*.dmp
+*.crx

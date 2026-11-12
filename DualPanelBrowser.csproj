@@ -22,7 +22,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="src\extmanager.html" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="src\extmanager.html" Link="extmanager.html" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="assets\ext_*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

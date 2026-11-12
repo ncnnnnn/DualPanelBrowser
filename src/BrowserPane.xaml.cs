@@ -370,8 +370,7 @@ public partial class BrowserPane : UserControl
             _tabUrls[wv] = src;
             if (!AddressBox.IsFocused)
             {
-                var u = wv.Source?.ToString() ?? "";
-                AddressBox.Text = (u == "about:blank" || u == "about:config") ? "" : u;
+                AddressBox.Text = (src == "about:blank" || src == "about:config") ? "" : src;
             }
             wv.CoreWebView2.ExecuteScriptAsync(
                 "document.addEventListener('mousedown',()=>{chrome.webview.postMessage('__focus__')},true);");
@@ -839,6 +838,7 @@ public partial class BrowserPane : UserControl
         var url = ResolveAddress(text, ctrl);
         Trace($"Address resolve ctrl={ctrl} text={text} -> {url}");
         RunOnCurrent(c => c.Navigate(url));
+        FocusWebView();
         e.Handled = true;
     }
 

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -53,6 +54,7 @@ public partial class BrowserPane : UserControl
             SyncVisibility();
             EnsureSelectedInit();
             FocusWebView();
+            UpdateZoomLabel();
             NotifyStateChanged();
         };
     }
@@ -86,6 +88,18 @@ public partial class BrowserPane : UserControl
                 return wv;
             return null;
         }
+    }
+
+    private void UpdateZoomLabel()
+    {
+        double zf = 1.0;
+        try
+        {
+            var wv = Current;
+            if (wv != null && wv.CoreWebView2 != null) zf = wv.ZoomFactor;
+        }
+        catch (ObjectDisposedException) { }
+        ZoomLabel.Text = $"{(int)Math.Round(zf * 100)}%";
     }
 
     [DllImport("user32.dll")] private static extern IntPtr SetFocus(IntPtr hWnd);
@@ -284,6 +298,7 @@ public partial class BrowserPane : UserControl
         ExtensionManager.SharedEnv ??= _env;
         // 先注册事件，再加载扩展，才能拦截扩展欢迎页
         wv.GotFocus += (_, _) => ((BrowserPane?)tab.Tag)?.FocusChanged?.Invoke(this, EventArgs.Empty);
+        wv.ZoomFactorChanged += (_, _) => Dispatcher.Invoke(UpdateZoomLabel);
         wv.CoreWebView2.WebMessageReceived += (_, e) =>
         {
             if (e.TryGetWebMessageAsString() == "__focus__")
@@ -360,6 +375,7 @@ public partial class BrowserPane : UserControl
             }
             wv.CoreWebView2.ExecuteScriptAsync(
                 "document.addEventListener('mousedown',()=>{chrome.webview.postMessage('__focus__')},true);");
+            UpdateZoomLabel();
             NotifyStateChanged();
         };
         // 手动触发进度条（首次导航时 ActualWidth 可能还没布局好）；空白页不触发
@@ -786,17 +802,44 @@ public partial class BrowserPane : UserControl
 
     private void Ext_Click(object sender, RoutedEventArgs e) => _ = OpenExtManagerAsync();
 
+    // 域名 / IPv4 / localhost（可带端口与路径），用于区分网址与搜索词
+    private static readonly Regex _hostRegex = new Regex(
+        @"^(localhost|(\d{1,3}\.){3}\d{1,3}|[a-zA-Z0-9][a-zA-Z0-9-]*(\.[a-zA-Z0-9][a-zA-Z0-9-]*)+)(:\d{1,5})?(/[^\s]*)?$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static string ResolveAddress(string raw, bool ctrlEnter)
+    {
+        var t = raw.Trim();
+        if (t.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            t.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+            t.StartsWith("about:", StringComparison.OrdinalIgnoreCase) ||
+            t.StartsWith("chrome-extension://", StringComparison.OrdinalIgnoreCase) ||
+            t.StartsWith("file://", StringComparison.OrdinalIgnoreCase) ||
+            t.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            return t;
+
+        if (ctrlEnter)
+        {
+            // Ctrl+Enter：补 www. 与 .com（已有域名的只补 www.）
+            if (!t.Contains('.')) t = "www." + t + ".com";
+            else if (!t.StartsWith("www.", StringComparison.OrdinalIgnoreCase)) t = "www." + t;
+            return "https://" + t;
+        }
+
+        if (_hostRegex.IsMatch(t)) return "https://" + t;
+        return "https://www.bing.com/search?q=" + Uri.EscapeDataString(t);
+    }
+
     private void AddressBox_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Enter) return;
         var text = AddressBox.Text.Trim();
         if (text.Length == 0) return;
-        if (!text.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
-            !text.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
-            !text.StartsWith("about:", StringComparison.OrdinalIgnoreCase) &&
-            !text.StartsWith("chrome-extension://", StringComparison.OrdinalIgnoreCase))
-            text = "https://" + text;
-        RunOnCurrent(c => c.Navigate(text));
+        bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+        var url = ResolveAddress(text, ctrl);
+        Trace($"Address resolve ctrl={ctrl} text={text} -> {url}");
+        RunOnCurrent(c => c.Navigate(url));
+        e.Handled = true;
     }
 
     private void NotifyStateChanged() => StateChanged?.Invoke(this, EventArgs.Empty);

@@ -24,6 +24,7 @@ public partial class BrowserPane : UserControl
     private readonly Dictionary<WebView2, System.Windows.Threading.DispatcherTimer> _tabTimers = new();
     private readonly Dictionary<WebView2, (TabItem tab, TextBlock title, string url)> _pending = new();
     private readonly HashSet<WebView2> _inited = new();
+    private readonly HashSet<WebView2> _dead = new();
     private bool _batchAdding;
     private bool _preloadStarted;
     private Grid? _viewHost;
@@ -42,14 +43,14 @@ public partial class BrowserPane : UserControl
             string u = "";
             try
             {
-                if (wv?.CoreWebView2 != null)
+                if (wv != null && !_dead.Contains(wv) && wv.CoreWebView2 != null)
                     u = wv.CoreWebView2.Source ?? "";
                 else if (wv?.Source != null)
                     u = wv.Source.ToString();
                 else if (wv != null && _tabUrls.TryGetValue(wv, out var stored))
                     u = stored;
             }
-            catch (ObjectDisposedException) { u = ""; }
+            catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { u = ""; }
             AddressBox.Text = (u == "about:blank" || u == "about:config" || u.StartsWith("data:text/html") || string.IsNullOrEmpty(u)) ? "" : u;
             SyncVisibility();
             EnsureSelectedInit();
@@ -299,6 +300,12 @@ public partial class BrowserPane : UserControl
         // 先注册事件，再加载扩展，才能拦截扩展欢迎页
         wv.GotFocus += (_, _) => ((BrowserPane?)tab.Tag)?.FocusChanged?.Invoke(this, EventArgs.Empty);
         wv.ZoomFactorChanged += (_, _) => Dispatcher.Invoke(UpdateZoomLabel);
+        wv.CoreWebView2.ProcessFailed += (_, pf) =>
+        {
+            _dead.Add(wv);
+            Trace($"ProcessFailed reason={pf.Reason} kind={pf.ProcessFailedKind}");
+            if (_tabTimers.TryGetValue(wv, out var tm)) { tm.Stop(); _tabTimers.Remove(wv); }
+        };
         wv.CoreWebView2.WebMessageReceived += (_, e) =>
         {
             if (e.TryGetWebMessageAsString() == "__focus__")
@@ -365,15 +372,22 @@ public partial class BrowserPane : UserControl
         };
         wv.CoreWebView2.NavigationCompleted += (_, _) =>
         {
-            var src = wv.CoreWebView2?.Source ?? wv.Source?.ToString() ?? "";
+            if (_dead.Contains(wv)) return;
+            string src;
+            try { src = wv.CoreWebView2?.Source ?? wv.Source?.ToString() ?? ""; }
+            catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { return; }
             Trace($"NavCompleted src={src}");
             _tabUrls[wv] = src;
             if (!AddressBox.IsFocused)
             {
                 AddressBox.Text = (src == "about:blank" || src == "about:config") ? "" : src;
             }
-            wv.CoreWebView2.ExecuteScriptAsync(
-                "document.addEventListener('mousedown',()=>{chrome.webview.postMessage('__focus__')},true);");
+            try
+            {
+                wv.CoreWebView2.ExecuteScriptAsync(
+                    "document.addEventListener('mousedown',()=>{chrome.webview.postMessage('__focus__')},true);");
+            }
+            catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { }
             UpdateZoomLabel();
             NotifyStateChanged();
         };
@@ -569,8 +583,11 @@ public partial class BrowserPane : UserControl
         if (Tabs.Items.Count <= 1)
         {
             Trace("CloseTab last-tab blanked");
-            try { wv?.CoreWebView2?.NavigateToString("<html></html>"); }
-            catch (ObjectDisposedException) { }
+            if (wv != null && !_dead.Contains(wv))
+            {
+                try { wv.CoreWebView2?.NavigateToString("<html></html>"); }
+                catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { Trace($"blank skip {ex.GetType().Name}"); }
+            }
             AddressBox.Text = "";
             NotifyStateChanged();
             return;
@@ -583,8 +600,9 @@ public partial class BrowserPane : UserControl
         _pending.Remove(wv!);
         _inited.Remove(wv!);
         ViewHost.Children.Remove(wv!);
+        _dead.Remove(wv!);
         try { wv?.Dispose(); }
-        catch (ObjectDisposedException) { }
+        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { }
         NotifyStateChanged();
     }
 
@@ -604,9 +622,9 @@ public partial class BrowserPane : UserControl
                 try
                 {
                     _tabUrls.TryGetValue(wv, out var stored);
-                    u = stored ?? wv.CoreWebView2?.Source ?? wv.Source?.ToString();
+                    u = stored ?? (!_dead.Contains(wv) ? wv.CoreWebView2?.Source : null) ?? wv.Source?.ToString();
                 }
-                catch (ObjectDisposedException) { }
+                catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { }
                 if (!string.IsNullOrEmpty(u) && u != "about:blank" &&
                     !u!.StartsWith("data:text/html") && !u!.Contains("extmanager"))
                     list.Add(u);
@@ -635,14 +653,14 @@ public partial class BrowserPane : UserControl
     {
         CoreWebView2? cw;
         try { cw = wv.CoreWebView2; }
-        catch (ObjectDisposedException) { return; }
-        if (cw == null) return;
+        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { return; }
+        if (cw == null || _dead.Contains(wv)) return;
         try
         {
             await ExtensionManager.LoadExtensionsAsync(cw);
             await ExtensionManager.WaitForLoadAsync();
         }
-        catch (ObjectDisposedException) { return; }
+        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { return; }
         timer.Stop();
         StatusLeft.Text = $"扩展加载完成，耗时 {loadSw.ElapsedMilliseconds / 1000}s";
         PopulateExtBar();
@@ -772,7 +790,7 @@ public partial class BrowserPane : UserControl
                 if (!string.IsNullOrEmpty(popupPath))
                 {
                     var url = $"chrome-extension://{ext.Id}/{popupPath}";
-                    var window = new ExtPopupWindow(url, ext.Name, ExtensionManager.SharedEnv!);
+                    var window = new ExtPopupWindow(url, ext.Name, ExtensionManager.SharedEnv!, AddTab);
                     var screen = System.Windows.SystemParameters.WorkArea;
                     var btnPos = btn.PointToScreen(new System.Windows.Point(0, 0));
                     window.Left = btnPos.X - window.Width + btn.ActualWidth;
@@ -837,6 +855,7 @@ public partial class BrowserPane : UserControl
         bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
         var url = ResolveAddress(text, ctrl);
         Trace($"Address resolve ctrl={ctrl} text={text} -> {url}");
+        AddressBox.Text = url;
         RunOnCurrent(c => c.Navigate(url));
         FocusWebView();
         e.Handled = true;

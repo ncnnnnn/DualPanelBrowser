@@ -29,4 +29,8 @@
     <Content Include="assets\ext_*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Resource Include="assets\app.ico" />
+  </ItemGroup>
+
 </Project>

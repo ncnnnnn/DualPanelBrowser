@@ -105,7 +105,8 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <TextBox x:Name="AddressBox" Grid.Column="0" Padding="12,0" FontSize="13" VerticalContentAlignment="Center"
-                                 KeyDown="AddressBox_KeyDown" BorderThickness="0" Background="Transparent"/>
+                                 KeyDown="AddressBox_KeyDown" PreviewMouseDoubleClick="AddressBox_MouseDoubleClick"
+                                 BorderThickness="0" Background="Transparent"/>
                         <TextBlock x:Name="ZoomLabel" Grid.Column="1" Text="100%" VerticalAlignment="Center"
                                    Margin="0,0,10,0" FontSize="12" Foreground="#888"/>
                     </Grid>

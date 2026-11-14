@@ -275,7 +275,15 @@ public partial class BrowserPane : UserControl
         _pending[wv] = (tab, title, url);
         Tabs.SelectedItem = tab;
         AddressBox.Text = url == "about:blank" ? "" : url;
-        AddressBox.Focus();
+        if (url == "about:blank")
+        {
+            // SelectionChanged 已异步把焦点推进 WebView；新空白标签在其后再把焦点拉回地址栏并全选
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                AddressBox.Focus();
+                AddressBox.SelectAll();
+            }), System.Windows.Threading.DispatcherPriority.Input);
+        }
 
         SyncVisibility();
         EnsureSelectedInit();
@@ -845,6 +853,16 @@ public partial class BrowserPane : UserControl
 
         if (_hostRegex.IsMatch(t)) return "https://" + t;
         return "https://www.bing.com/search?q=" + Uri.EscapeDataString(t);
+    }
+
+    /// <summary>
+    ///     地址栏双击即全选整段 URL。WPF 默认双击只选中光标下的一个单词，
+    ///     而地址栏最常见的操作是「清空重输」或「复制整条」，所以这里拦下默认行为。
+    /// </summary>
+    private void AddressBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        AddressBox.SelectAll();
+        e.Handled = true;
     }
 
     private void AddressBox_KeyDown(object sender, KeyEventArgs e)

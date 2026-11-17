@@ -50,6 +50,7 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="TabItem">
                         <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                HorizontalAlignment="Left"
                                 CornerRadius="8,8,0,0" Padding="8,5" Margin="4,2,0,0" Height="32">
                             <ContentPresenter ContentSource="Header"/>
                         </Border>

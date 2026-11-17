@@ -50,7 +50,7 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="TabItem">
                         <Border x:Name="Bd" Background="{TemplateBinding Background}"
-                                CornerRadius="8,8,0,0" Padding="12,6" Margin="4,2,0,0" Height="32">
+                                CornerRadius="8,8,0,0" Padding="8,5" Margin="4,2,0,0" Height="32">
                             <ContentPresenter ContentSource="Header"/>
                         </Border>
                     </ControlTemplate>
@@ -128,8 +128,16 @@
         <!-- 底部扩展状态栏（必须在TabControl之前声明） -->
         <Border DockPanel.Dock="Bottom" Background="#F5F5F5" Height="32" BorderBrush="#E0E0E0" BorderThickness="0,1,0,0">
             <Grid>
-                <TextBlock x:Name="StatusLeft" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="12" Foreground="#888"/>
-                <StackPanel x:Name="ExtBar" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="TitleLabel" Grid.Column="0" VerticalAlignment="Center" Margin="8,0,8,0"
+                           FontSize="12" Foreground="#666" TextTrimming="CharacterEllipsis"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock x:Name="StatusLeft" VerticalAlignment="Center" Margin="0,0,8,0" FontSize="12" Foreground="#888"/>
+                    <StackPanel x:Name="ExtBar" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                </StackPanel>
             </Grid>
         </Border>
         <TabControl x:Name="Tabs" Background="White">

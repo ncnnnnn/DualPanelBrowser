@@ -20,6 +20,7 @@ public partial class BrowserPane : UserControl
     private CoreWebView2Environment _env = null!;
     private WebView2? _extMgrWv;
     private readonly Dictionary<WebView2, string> _tabUrls = new();
+    private readonly Dictionary<WebView2, TextBlock> _tabTitles = new();
     private readonly Dictionary<TabItem, WebView2> _tabWv = new();
     private readonly Dictionary<WebView2, System.Windows.Threading.DispatcherTimer> _tabTimers = new();
     private readonly Dictionary<WebView2, (TabItem tab, TextBlock title, string url)> _pending = new();
@@ -52,6 +53,7 @@ public partial class BrowserPane : UserControl
             }
             catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { u = ""; }
             AddressBox.Text = (u == "about:blank" || u == "about:config" || u.StartsWith("data:text/html") || string.IsNullOrEmpty(u)) ? "" : u;
+            TitleLabel.Text = wv != null && _tabTitles.TryGetValue(wv, out var titleBlock) ? titleBlock.Text : "";
             SyncVisibility();
             EnsureSelectedInit();
             FocusWebView();
@@ -77,8 +79,19 @@ public partial class BrowserPane : UserControl
 
     private void TabBar_PreviewMouseLeftDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ClickCount == 2)
+        // 双击标签本身走双击关闭；只有双击标签栏空白处才新建标签
+        if (e.ClickCount == 2 && FindParent<TabItem>(e.OriginalSource as DependencyObject) == null)
             AddTab("about:blank");
+    }
+
+    private static T? FindParent<T>(DependencyObject? d) where T : DependencyObject
+    {
+        while (d != null)
+        {
+            if (d is T t) return t;
+            d = System.Windows.Media.VisualTreeHelper.GetParent(d);
+        }
+        return null;
     }
 
     public WebView2? Current
@@ -190,6 +203,7 @@ public partial class BrowserPane : UserControl
             source._tabWv.Remove(tab);
             _tabWv[tab] = wv;
             if (source._tabUrls.TryGetValue(wv, out var u)) { source._tabUrls.Remove(wv); _tabUrls[wv] = u; }
+            if (source._tabTitles.TryGetValue(wv, out var tb)) { source._tabTitles.Remove(wv); _tabTitles[wv] = tb; }
             if (source._tabTimers.TryGetValue(wv, out var t)) { source._tabTimers.Remove(wv); _tabTimers[wv] = t; }
             if (source._pending.TryGetValue(wv, out var p)) { source._pending.Remove(wv); _pending[wv] = p; }
             if (source._inited.Remove(wv)) _inited.Add(wv);
@@ -248,18 +262,28 @@ public partial class BrowserPane : UserControl
     public void AddTab(string url)
     {
         var wv = new WebView2();
-        var header = new StackPanel { Orientation = Orientation.Horizontal };
-        var title = new TextBlock { Text = "New tab", Margin = new Thickness(0,0,8,0), FontSize = 12, MaxWidth = 160 };
+        var header = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        var title = new TextBlock
+        {
+            Text = "New tab",
+            Margin = new Thickness(0, 0, 6, 0),
+            FontSize = 12,
+            MaxWidth = 120,
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center
+        };
         var close = new Button
         {
             Content = "✕",
-            Width = 16,
-            Height = 16,
+            Width = 14,
+            Height = 14,
             Padding = new Thickness(0),
             FontSize = 9,
             Background = System.Windows.Media.Brushes.Transparent,
             BorderThickness = new Thickness(0),
             Cursor = System.Windows.Input.Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Center,
             ToolTip = "Close tab"
         };
         var tab = new TabItem { Header = header };
@@ -267,11 +291,13 @@ public partial class BrowserPane : UserControl
         header.Children.Add(close);
         tab.Content = null;
         _tabWv[tab] = wv;
+        _tabTitles[wv] = title;
         ViewHost.Children.Add(wv);
         _tabUrls[wv] = url;
         Tabs.Items.Add(tab);
         Trace($"AddTab url={url} count={Tabs.Items.Count}");
         AttachTabDrag(tab);
+        tab.MouseDoubleClick += (_, _) => CloseTab(tab);
         _pending[wv] = (tab, title, url);
         Tabs.SelectedItem = tab;
         AddressBox.Text = url == "about:blank" ? "" : url;
@@ -349,7 +375,10 @@ public partial class BrowserPane : UserControl
         _tabTimers[wv] = timer;
         _ = LoadExtAsync(wv, timer, loadSw);
         wv.CoreWebView2.DocumentTitleChanged += (_, _) =>
+        {
             title.Text = wv.CoreWebView2.DocumentTitle;
+            if (Current == wv) TitleLabel.Text = title.Text;
+        };
         wv.CoreWebView2.NavigationStarting += (_, navArgs) =>
         {
             if (navArgs.Uri == "about:blank" || string.IsNullOrEmpty(navArgs.Uri)) return;
@@ -430,7 +459,7 @@ public partial class BrowserPane : UserControl
 
         var wv = new WebView2();
         var header = new StackPanel { Orientation = Orientation.Horizontal };
-        var title = new TextBlock { Text = "扩展管理", Margin = new Thickness(2, 0, 6, 0) };
+        var title = new TextBlock { Text = "扩展管理", Margin = new Thickness(2, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap };
         var close = new Button
         {
             Content = "x",
@@ -441,10 +470,12 @@ public partial class BrowserPane : UserControl
         header.Children.Add(close);
         tab.Content = null;
         _tabWv[tab] = wv;
+        _tabTitles[wv] = title;
         ViewHost.Children.Add(wv);
         _tabUrls[wv] = "extmanager";
         Tabs.Items.Add(tab);
         AttachTabDrag(tab);
+        tab.MouseDoubleClick += (_, _) => CloseTab(tab);
         Tabs.SelectedItem = tab;
         close.Click += (_, _) =>
         {
@@ -597,6 +628,7 @@ public partial class BrowserPane : UserControl
                 catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { Trace($"blank skip {ex.GetType().Name}"); }
             }
             AddressBox.Text = "";
+            TitleLabel.Text = "";
             NotifyStateChanged();
             return;
         }
@@ -604,6 +636,7 @@ public partial class BrowserPane : UserControl
         Tabs.Items.Remove(tab);
         Trace($"CloseTab after remove count={Tabs.Items.Count} stillContains={Tabs.Items.Contains(tab)}");
         _tabUrls.Remove(wv!);
+        _tabTitles.Remove(wv!);
         _tabWv.Remove(tab);
         _pending.Remove(wv!);
         _inited.Remove(wv!);

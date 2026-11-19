@@ -26,6 +26,10 @@ public partial class BrowserPane : UserControl
     private readonly Dictionary<WebView2, (TabItem tab, TextBlock title, string url)> _pending = new();
     private readonly HashSet<WebView2> _inited = new();
     private readonly HashSet<WebView2> _dead = new();
+    // 派生关系：某标签是从哪个标签（弹窗/新链接）派生出来的，关闭时优先回到它
+    private readonly Dictionary<TabItem, TabItem> _tabOrigin = new();
+    // 最近一次鼠标按下时的修饰键，用于判断 Ctrl+点击（后台新标签）
+    private readonly Dictionary<WebView2, (bool ctrl, bool shift, bool meta)> _lastMods = new();
     private bool _batchAdding;
     private bool _preloadStarted;
     private Grid? _viewHost;
@@ -35,9 +39,37 @@ public partial class BrowserPane : UserControl
     public event EventHandler? StateChanged;
     public event EventHandler? FocusChanged;
 
+    /// <summary>关闭标签后切到哪个标签。</summary>
+    public enum CloseBehavior { Previous = 0, Next = 1, Last = 2 }
+
+    private CloseBehavior _closeBehavior = CloseBehavior.Previous;
+    private bool _activateNewTab = true;   // 网页新链接开的新标签是否前台激活（默认前台，保持原手感）
+    private bool _dedupPopupTabs = true;   // 网页新链接落到的 URL 若已有标签，激活已存在的那个
+
+    public CloseBehavior CloseSequence
+    {
+        get => _closeBehavior;
+        set { _closeBehavior = value; SyncCloseMenuChecks(); NotifyStateChanged(); }
+    }
+
+    public bool ActivateNewTab
+    {
+        get => _activateNewTab;
+        set { _activateNewTab = value; MiActivateNew.IsChecked = value; NotifyStateChanged(); }
+    }
+
+    public bool DedupPopupTabs
+    {
+        get => _dedupPopupTabs;
+        set { _dedupPopupTabs = value; MiDedup.IsChecked = value; NotifyStateChanged(); }
+    }
+
     public BrowserPane()
     {
         InitializeComponent();
+        MiActivateNew.IsChecked = _activateNewTab;
+        MiDedup.IsChecked = _dedupPopupTabs;
+        SyncCloseMenuChecks();
         Tabs.SelectionChanged += (_, _) =>
         {
             var wv = Current;
@@ -192,7 +224,11 @@ public partial class BrowserPane : UserControl
         Trace($"DetachTab idx={Tabs.Items.IndexOf(tab)} count={Tabs.Items.Count}");
         if (_tabWv.TryGetValue(tab, out var dwv)) ViewHost.Children.Remove(dwv);
         Tabs.Items.Remove(tab);
+        // 派生来源只在本面板内有效，跨面板后不再指向任何标签
+        _tabOrigin.Remove(tab);
         Trace($"DetachTab after count={Tabs.Items.Count} stillContains={Tabs.Items.Contains(tab)}");
+        SyncVisibility();
+        NotifyStateChanged();
     }
 
     public void AdoptTab(TabItem tab, BrowserPane source)
@@ -206,8 +242,10 @@ public partial class BrowserPane : UserControl
             if (source._tabTitles.TryGetValue(wv, out var tb)) { source._tabTitles.Remove(wv); _tabTitles[wv] = tb; }
             if (source._tabTimers.TryGetValue(wv, out var t)) { source._tabTimers.Remove(wv); _tabTimers[wv] = t; }
             if (source._pending.TryGetValue(wv, out var p)) { source._pending.Remove(wv); _pending[wv] = p; }
+            if (source._lastMods.TryGetValue(wv, out var m)) { source._lastMods.Remove(wv); _lastMods[wv] = m; }
             if (source._inited.Remove(wv)) _inited.Add(wv);
         }
+        source._tabOrigin.Remove(tab);
         tab.Tag = this;
         Tabs.Items.Add(tab);
         if (_tabWv.TryGetValue(tab, out var awv)) ViewHost.Children.Add(awv);
@@ -259,8 +297,15 @@ public partial class BrowserPane : UserControl
         };
     }
 
-    public void AddTab(string url)
+    public void AddTab(string url) => AddTab(url, true, null, false, null);
+
+    /// <param name="activate">false = 后台标签：不切换选中项、不写地址栏、不抢焦点。</param>
+    /// <param name="insertIndex">插入位置；null = 追加到末尾。</param>
+    /// <param name="dedup">true = 同 URL 已有标签时激活它而不是新开。</param>
+    /// <param name="origin">派生来源标签，关闭本标签时优先回到它。</param>
+    public TabItem? AddTab(string url, bool activate, int? insertIndex = null, bool dedup = false, TabItem? origin = null)
     {
+        if (dedup && TryActivateExisting(url)) return null;
         var wv = new WebView2();
         var header = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         var title = new TextBlock
@@ -294,25 +339,43 @@ public partial class BrowserPane : UserControl
         _tabTitles[wv] = title;
         ViewHost.Children.Add(wv);
         _tabUrls[wv] = url;
-        Tabs.Items.Add(tab);
-        Trace($"AddTab url={url} count={Tabs.Items.Count}");
+        int at = insertIndex is int ix && ix >= 0 && ix <= Tabs.Items.Count ? ix : Tabs.Items.Count;
+        Tabs.Items.Insert(at, tab);
+        if (origin != null) _tabOrigin[tab] = origin;
+        Trace($"AddTab url={url} activate={activate} at={at} count={Tabs.Items.Count}");
         AttachTabDrag(tab);
         tab.MouseDoubleClick += (_, _) => CloseTab(tab);
         _pending[wv] = (tab, title, url);
-        Tabs.SelectedItem = tab;
-        AddressBox.Text = url == "about:blank" ? "" : url;
-        if (url == "about:blank")
+        if (activate)
         {
-            // SelectionChanged 已异步把焦点推进 WebView；新空白标签在其后再把焦点拉回地址栏并全选
+            Tabs.SelectedItem = tab;
+            AddressBox.Text = url == "about:blank" ? "" : url;
+            if (url == "about:blank")
+            {
+                // SelectionChanged 已异步把焦点推进 WebView；新空白标签在其后再把焦点拉回地址栏并全选
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    AddressBox.Focus();
+                    AddressBox.SelectAll();
+                }), System.Windows.Threading.DispatcherPriority.Input);
+            }
+        }
+        else
+        {
+            // 后台标签：照样初始化 WebView2 并开始导航，只是不切换选中项、不抢焦点
             Dispatcher.BeginInvoke(new Action(() =>
             {
-                AddressBox.Focus();
-                AddressBox.SelectAll();
-            }), System.Windows.Threading.DispatcherPriority.Input);
+                if (_pending.TryGetValue(wv, out var bp))
+                {
+                    _pending.Remove(wv);
+                    Trace($"InitBackground url={bp.url}");
+                    _ = InitAsync(wv, bp.tab, bp.title, bp.url);
+                }
+            }), System.Windows.Threading.DispatcherPriority.Background);
         }
 
         SyncVisibility();
-        EnsureSelectedInit();
+        if (activate) EnsureSelectedInit();
         close.Click += (_, _) =>
         {
             var owner = (BrowserPane?)tab.Tag;
@@ -320,6 +383,56 @@ public partial class BrowserPane : UserControl
             owner?.CloseTab(tab);
         };
         NotifyStateChanged();
+        return tab;
+    }
+
+    /// <summary>
+    ///     同 URL 已有标签就直接切过去（对齐 GreenBrowser 的 FindDupURL 去重）。
+    ///     只比较归一化后的 scheme/host/port/path/query，忽略 fragment。
+    /// </summary>
+    private bool TryActivateExisting(string url)
+    {
+        var key = NormalizeUrl(url);
+        if (key.Length == 0 || key == "about:blank") return false;
+        foreach (TabItem ti in Tabs.Items)
+        {
+            if (!_tabWv.TryGetValue(ti, out var wv)) continue;
+            if (!_tabUrls.TryGetValue(wv, out var u) || string.IsNullOrEmpty(u)) continue;
+            if (u == "about:blank" || u.StartsWith("data:") || u.Contains("extmanager")) continue;
+            if (NormalizeUrl(u) != key) continue;
+            Trace($"dedup activate tab url={url}");
+            Tabs.SelectedItem = ti;
+            FocusWebView();
+            return true;
+        }
+        return false;
+    }
+
+    private static string NormalizeUrl(string raw)
+    {
+        var s = (raw ?? "").Trim();
+        if (s.Length == 0) return "";
+        if (s == "about:blank" || s.StartsWith("about:", StringComparison.OrdinalIgnoreCase) ||
+            s.StartsWith("chrome-extension://", StringComparison.OrdinalIgnoreCase) ||
+            s.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            return s;
+        try
+        {
+            var uri = new Uri(s);
+            var sb = new System.Text.StringBuilder();
+            sb.Append(uri.Scheme.ToLowerInvariant()).Append("://").Append(uri.Host.ToLowerInvariant());
+            if (!uri.IsDefaultPort && uri.Port > 0) sb.Append(':').Append(uri.Port);
+            var path = uri.AbsolutePath;
+            if (path.Length > 1 && path.EndsWith("/")) path = path[..^1];
+            sb.Append(path);
+            if (!string.IsNullOrEmpty(uri.Query)) sb.Append(uri.Query);
+            return sb.ToString();
+        }
+        catch (UriFormatException)
+        {
+            // 不是合法 URL 就退回原串，至少保证完全相同才去重
+            return s;
+        }
     }
 
     private async Task InitAsync(WebView2 wv, TabItem tab, TextBlock title, string url)
@@ -342,14 +455,29 @@ public partial class BrowserPane : UserControl
         };
         wv.CoreWebView2.WebMessageReceived += (_, e) =>
         {
-            if (e.TryGetWebMessageAsString() == "__focus__")
+            string? msg = null;
+            try { msg = e.TryGetWebMessageAsString(); } catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException) { }
+            if (msg == null) return;
+            if (msg.StartsWith("__mods__|", StringComparison.Ordinal))
+            {
+                var parts = msg.Split('|');
+                if (parts.Length >= 4)
+                    _lastMods[wv] = (parts[1] == "1", parts[2] == "1", parts[3] == "1");
+                return;
+            }
+            if (msg == "__focus__")
                 ((BrowserPane?)tab.Tag)?.FocusChanged?.Invoke(this, EventArgs.Empty);
         };
         wv.CoreWebView2.NewWindowRequested += (_, e) =>
         {
             e.Handled = true;
-            if (!e.Uri.StartsWith("chrome-extension://"))
-                ((BrowserPane?)tab.Tag)?.AddTab(e.Uri);
+            if (e.Uri.StartsWith("chrome-extension://")) return;
+            var pane = (BrowserPane?)tab.Tag;
+            if (pane == null) return;
+            // Ctrl/⌘+点击 = 后台开新标签（对齐 Chromium 惯例）；其余按“新链接是否前台”设置
+            bool modCtrl = pane._lastMods.TryGetValue(wv, out var mods) && (mods.ctrl || mods.meta);
+            bool activate = modCtrl ? false : pane._activateNewTab;
+            pane.AddTab(e.Uri, activate, null, pane._dedupPopupTabs, tab);
         };
         wv.CoreWebView2.NavigationStarting += (s, e) =>
         {
@@ -422,7 +550,10 @@ public partial class BrowserPane : UserControl
             try
             {
                 wv.CoreWebView2.ExecuteScriptAsync(
-                    "document.addEventListener('mousedown',()=>{chrome.webview.postMessage('__focus__')},true);");
+                    "if(!window.__dpb){window.__dpb=1;" +
+                    "document.addEventListener('mousedown',function(e){" +
+                    "chrome.webview.postMessage('__mods__|'+(e.ctrlKey?1:0)+'|'+(e.shiftKey?1:0)+'|'+(e.metaKey?1:0));" +
+                    "chrome.webview.postMessage('__focus__');},true);}");
             }
             catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { }
             UpdateZoomLabel();
@@ -616,13 +747,17 @@ public partial class BrowserPane : UserControl
 
     public void CloseTab(TabItem tab)
     {
-        _tabWv.TryGetValue(tab, out var wv);
-        Trace($"CloseTab entry idx={Tabs.Items.IndexOf(tab)} count={Tabs.Items.Count} wv={(wv == null ? "null" : "ok")}");
+        if (!_tabWv.TryGetValue(tab, out var wv))
+        {
+            Trace($"CloseTab ignore unknown tab contains={Tabs.Items.Contains(tab)}");
+            return;
+        }
+        Trace($"CloseTab entry idx={Tabs.Items.IndexOf(tab)} count={Tabs.Items.Count} current={Tabs.SelectedItem == tab}");
         if (wv == _extMgrWv) _extMgrWv = null;
         if (Tabs.Items.Count <= 1)
         {
             Trace("CloseTab last-tab blanked");
-            if (wv != null && !_dead.Contains(wv))
+            if (!_dead.Contains(wv))
             {
                 try { wv.CoreWebView2?.NavigateToString("<html></html>"); }
                 catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { Trace($"blank skip {ex.GetType().Name}"); }
@@ -632,19 +767,57 @@ public partial class BrowserPane : UserControl
             NotifyStateChanged();
             return;
         }
-        if (wv != null && _tabTimers.TryGetValue(wv, out var t)) { t.Stop(); _tabTimers.Remove(wv); }
+        int idx = Tabs.Items.IndexOf(tab);
+        bool wasCurrent = Tabs.SelectedItem == tab;
+        var origin = _tabOrigin.TryGetValue(tab, out var o) ? o : null;
+        if (_tabTimers.TryGetValue(wv, out var t)) { t.Stop(); _tabTimers.Remove(wv); }
         Tabs.Items.Remove(tab);
         Trace($"CloseTab after remove count={Tabs.Items.Count} stillContains={Tabs.Items.Contains(tab)}");
-        _tabUrls.Remove(wv!);
-        _tabTitles.Remove(wv!);
+        _tabUrls.Remove(wv);
+        _tabTitles.Remove(wv);
         _tabWv.Remove(tab);
-        _pending.Remove(wv!);
-        _inited.Remove(wv!);
-        ViewHost.Children.Remove(wv!);
-        _dead.Remove(wv!);
-        try { wv?.Dispose(); }
+        _tabOrigin.Remove(tab);
+        _lastMods.Remove(wv);
+        _pending.Remove(wv);
+        _inited.Remove(wv);
+        _dead.Remove(wv);
+        ViewHost.Children.Remove(wv);
+        try { wv.Dispose(); }
         catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { }
+        if (wasCurrent)
+        {
+            var target = ResolveCloseTarget(idx, origin);
+            if (target != null)
+            {
+                Tabs.SelectedItem = target;
+                Trace($"CloseTab reselect idx={Tabs.Items.IndexOf(target)} origin={(origin != null ? "yes" : "no")}");
+            }
+            else
+            {
+                AddressBox.Text = "";
+                TitleLabel.Text = "";
+            }
+        }
         NotifyStateChanged();
+    }
+
+    /// <summary>
+    ///     关闭当前标签后该选谁：优先回到派生来源标签，否则按设置取左邻 / 右邻 / 末尾。
+    ///     默认左邻，对齐 GreenBrowser 的 CloseSequence=2。
+    /// </summary>
+    private TabItem? ResolveCloseTarget(int closedIndex, TabItem? origin)
+    {
+        if (origin != null && Tabs.Items.Contains(origin) && _tabWv.ContainsKey(origin))
+            return origin;
+        int count = Tabs.Items.Count;
+        if (count == 0) return null;
+        int i = _closeBehavior switch
+        {
+            CloseBehavior.Last => count - 1,
+            CloseBehavior.Next => Math.Min(Math.Max(closedIndex, 0), count - 1),
+            _ => Math.Max(closedIndex - 1, 0)
+        };
+        return Tabs.Items[i] as TabItem;
     }
 
     public void CloseCurrent()
@@ -859,6 +1032,38 @@ public partial class BrowserPane : UserControl
     }
 
     private void Ext_Click(object sender, RoutedEventArgs e) => _ = OpenExtManagerAsync();
+
+    private void ActivateNewTab_Click(object sender, RoutedEventArgs e)
+    {
+        _activateNewTab = MiActivateNew.IsChecked;
+        Trace($"setting activateNewTab={_activateNewTab}");
+        NotifyStateChanged();
+    }
+
+    private void DedupTabs_Click(object sender, RoutedEventArgs e)
+    {
+        _dedupPopupTabs = MiDedup.IsChecked;
+        Trace($"setting dedupPopupTabs={_dedupPopupTabs}");
+        NotifyStateChanged();
+    }
+
+    private void CloseSeq_Click(object sender, RoutedEventArgs e)
+    {
+        var item = sender as MenuItem;
+        _closeBehavior = item == MiCloseNext ? CloseBehavior.Next
+                      : item == MiCloseLast ? CloseBehavior.Last
+                      : CloseBehavior.Previous;
+        SyncCloseMenuChecks();
+        Trace($"setting closeSequence={_closeBehavior}");
+        NotifyStateChanged();
+    }
+
+    private void SyncCloseMenuChecks()
+    {
+        MiClosePrev.IsChecked = _closeBehavior == CloseBehavior.Previous;
+        MiCloseNext.IsChecked = _closeBehavior == CloseBehavior.Next;
+        MiCloseLast.IsChecked = _closeBehavior == CloseBehavior.Last;
+    }
 
     // 域名 / IPv4 / localhost（可带端口与路径），用于区分网址与搜索词
     private static readonly Regex _hostRegex = new Regex(

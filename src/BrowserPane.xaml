@@ -116,6 +116,16 @@
                     <TextBlock FontFamily="Segoe Fluent Icons" FontSize="15" Foreground="#5F6368" Text="&#xE7B8;"/>
                     <Button.ContextMenu>
                         <ContextMenu>
+                            <MenuItem x:Name="MiActivateNew" Header="新链接在新标签前台打开" IsCheckable="True"
+                                      Click="ActivateNewTab_Click" ToolTip="不勾选则新标签在后台打开，不打断当前页面"/>
+                            <MenuItem x:Name="MiDedup" Header="重复链接去重" IsCheckable="True"
+                                      Click="DedupTabs_Click" ToolTip="新链接的 URL 已有标签时，切到那个标签而不重复新开"/>
+                            <MenuItem Header="关闭标签后切换到">
+                                <MenuItem x:Name="MiClosePrev" Header="左侧标签（默认）" IsCheckable="True" Click="CloseSeq_Click"/>
+                                <MenuItem x:Name="MiCloseNext" Header="右侧标签" IsCheckable="True" Click="CloseSeq_Click"/>
+                                <MenuItem x:Name="MiCloseLast" Header="最后一个标签" IsCheckable="True" Click="CloseSeq_Click"/>
+                            </MenuItem>
+                            <Separator/>
                             <MenuItem x:Name="MiExt" Header="扩展" Click="Ext_Click"/>
                         </ContextMenu>
                     </Button.ContextMenu>

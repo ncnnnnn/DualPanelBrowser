@@ -206,6 +206,22 @@ public partial class MainWindow : Window
                 var state = JsonSerializer.Deserialize<SessionState>(File.ReadAllText(SessionFile));
                 if (state != null)
                 {
+                    if (state.ActivateNewTab is bool an)
+                    {
+                        LeftPane.ActivateNewTab = an;
+                        RightPane.ActivateNewTab = an;
+                    }
+                    if (state.DedupPopupTabs is bool dd)
+                    {
+                        LeftPane.DedupPopupTabs = dd;
+                        RightPane.DedupPopupTabs = dd;
+                    }
+                    if (state.CloseSequence is int cs && cs >= 0 && cs <= 2)
+                    {
+                        var cb = (BrowserPane.CloseBehavior)cs;
+                        LeftPane.CloseSequence = cb;
+                        RightPane.CloseSequence = cb;
+                    }
                     LeftPane.LoadUrls(state.Left ?? new List<string>());
                     RightPane.LoadUrls(state.Right ?? new List<string>());
                     return;
@@ -224,7 +240,10 @@ public partial class MainWindow : Window
             var state = new SessionState
             {
                 Left = LeftPane.GetTabUrls(),
-                Right = RightPane.GetTabUrls()
+                Right = RightPane.GetTabUrls(),
+                ActivateNewTab = LeftPane.ActivateNewTab,
+                DedupPopupTabs = LeftPane.DedupPopupTabs,
+                CloseSequence = (int)LeftPane.CloseSequence
             };
             File.WriteAllText(SessionFile, JsonSerializer.Serialize(state));
         }
@@ -262,5 +281,8 @@ public partial class MainWindow : Window
     {
         public List<string> Left { get; set; } = new();
         public List<string> Right { get; set; } = new();
+        public bool? ActivateNewTab { get; set; }
+        public bool? DedupPopupTabs { get; set; }
+        public int? CloseSequence { get; set; }
     }
 }

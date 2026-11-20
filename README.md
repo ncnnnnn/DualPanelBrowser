@@ -89,6 +89,27 @@ dotnet build -c Release
 
 `extmanager.html` 与 `assets/ext_*.png` 由工程文件在编译时自动复制到输出目录。
 
+## 便携包出包
+
+```powershell
+pwsh scripts\pack-portable.ps1
+# 可选参数：-Source <Release 输出目录>  -Target <便携包目录>  -CrxSource <crx 来源目录>
+```
+
+脚本把 Release 产物、三架构 `runtimes` loader、`assets`、`extmanager.html` 和 4 个内置 `.crx` 复制到便携包目录，并在出包时**自动剥离所有敏感数据**，便携包外带不含任何已保存信息：
+
+| 剥离项 | 对应文件 / 规则 | 原因 |
+|---|---|---|
+| WebView2 密码库 | `Data/**/Login Data*`、`Login Data For Account*`（含 `-journal`） | 已保存的账号密码 SQLite 库 |
+| 主加密密钥 | `Data/**/Local State` | DPAPI 包裹的密钥，配合密码库可解密 |
+| 登录 Cookie | `Data/**/Cookies` | 已登录站点的会话凭据 |
+| 会话记录 | `session.json` | 上次打开的标签页与行为偏好 |
+| 诊断与符号 | `*.log`、`*.dmp`、`*.pdb`、`*.xml` | 调试痕迹与 SDK 文档，不随包发布 |
+
+`Data/` 目录整体清空，WebView2 首次启动时重建空白配置。出包后脚本自动扫描校验，发现残留密码库、密钥、Cookie、会话或调试文件即报错退出。
+
+> 说明：WebView2 密码为 DPAPI 包裹的传统 v10 加密，未启用 Edge 的 App-Bound 加密；便携包不保留密码库，是当前成本最低、风险最小的防护方式。壳内不提供密码查看/管理入口。
+
 ## 目录结构
 
 ```
@@ -97,6 +118,8 @@ DualPanelBrowser-dev/
 ├── nuget.config              # NuGet 镜像配置
 ├── README.md
 ├── .gitignore
+├── scripts/
+│   └── pack-portable.ps1     # 便携包出包：复制产物并剥离密码库/密钥/Cookie/会话
 ├── src/                      # 源码
 │   ├── App.xaml              # 应用入口
 │   ├── MainWindow.xaml(.cs)  # 主窗口（双面板布局、会话保存/还原、全局快捷键）

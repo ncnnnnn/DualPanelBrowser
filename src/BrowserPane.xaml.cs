@@ -45,6 +45,7 @@ public partial class BrowserPane : UserControl
     private CloseBehavior _closeBehavior = CloseBehavior.Previous;
     private bool _activateNewTab = true;   // 网页新链接开的新标签是否前台激活（默认前台，保持原手感）
     private bool _dedupPopupTabs = true;   // 网页新链接落到的 URL 若已有标签，激活已存在的那个
+    private bool _passwordAutofill = true; // 登录时提示保存密码、下次自动填充（数据在本程序 UDF，不与 Edge 共用）
 
     public CloseBehavior CloseSequence
     {
@@ -64,11 +65,47 @@ public partial class BrowserPane : UserControl
         set { _dedupPopupTabs = value; MiDedup.IsChecked = value; NotifyStateChanged(); }
     }
 
+    public bool PasswordAutofill
+    {
+        get => _passwordAutofill;
+        set
+        {
+            _passwordAutofill = value;
+            MiPwdAutofill.IsChecked = value;
+            ApplyAutofill();
+            NotifyStateChanged();
+        }
+    }
+
+    /// <summary>
+    ///     WebView2 的密码自动保存/自动填充是 profile 级开关，默认关闭。
+    ///     打开后内核会在登录成功后提示保存，并在下次登录时填充；数据落在本程序的用户数据目录。
+    /// </summary>
+    private void ApplyAutofill()
+    {
+        foreach (var pair in _tabWv)
+        {
+            try
+            {
+                var core = pair.Value.CoreWebView2;
+                if (core == null) continue;
+                core.Settings.IsPasswordAutosaveEnabled = _passwordAutofill;
+                core.Settings.IsGeneralAutofillEnabled = _passwordAutofill;
+            }
+            catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException
+                                          or NotImplementedException or System.Runtime.InteropServices.COMException)
+            {
+                Trace($"autofill apply skip {ex.GetType().Name}");
+            }
+        }
+    }
+
     public BrowserPane()
     {
         InitializeComponent();
         MiActivateNew.IsChecked = _activateNewTab;
         MiDedup.IsChecked = _dedupPopupTabs;
+        MiPwdAutofill.IsChecked = _passwordAutofill;
         SyncCloseMenuChecks();
         Tabs.SelectionChanged += (_, _) =>
         {
@@ -444,6 +481,18 @@ public partial class BrowserPane : UserControl
         catch (Exception ex) { Trace($"Ensure FAILED url={url} {ex}"); return; }
         Trace($"InitAsync core ready url={url}");
         ExtensionManager.SharedEnv ??= _env;
+        // 密码自动填充：必须在任何导航前打开，否则首次登录的"保存密码"提示不会出现
+        try
+        {
+            wv.CoreWebView2.Settings.IsPasswordAutosaveEnabled = _passwordAutofill;
+            wv.CoreWebView2.Settings.IsGeneralAutofillEnabled = _passwordAutofill;
+            Trace($"autofill password={wv.CoreWebView2.Settings.IsPasswordAutosaveEnabled} " +
+                  $"general={wv.CoreWebView2.Settings.IsGeneralAutofillEnabled}");
+        }
+        catch (Exception ex)
+        {
+            Trace($"autofill set FAILED {ex.GetType().Name}: {ex.Message}");
+        }
         // 先注册事件，再加载扩展，才能拦截扩展欢迎页
         wv.GotFocus += (_, _) => ((BrowserPane?)tab.Tag)?.FocusChanged?.Invoke(this, EventArgs.Empty);
         wv.ZoomFactorChanged += (_, _) => Dispatcher.Invoke(UpdateZoomLabel);
@@ -1045,6 +1094,12 @@ public partial class BrowserPane : UserControl
         _dedupPopupTabs = MiDedup.IsChecked;
         Trace($"setting dedupPopupTabs={_dedupPopupTabs}");
         NotifyStateChanged();
+    }
+
+    private void PasswordAutofill_Click(object sender, RoutedEventArgs e)
+    {
+        PasswordAutofill = MiPwdAutofill.IsChecked;
+        Trace($"setting passwordAutofill={_passwordAutofill}");
     }
 
     private void CloseSeq_Click(object sender, RoutedEventArgs e)

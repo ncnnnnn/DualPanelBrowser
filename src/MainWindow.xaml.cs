@@ -216,6 +216,11 @@ public partial class MainWindow : Window
                         LeftPane.DedupPopupTabs = dd;
                         RightPane.DedupPopupTabs = dd;
                     }
+                    if (state.PasswordAutofill is bool pw)
+                    {
+                        LeftPane.PasswordAutofill = pw;
+                        RightPane.PasswordAutofill = pw;
+                    }
                     if (state.CloseSequence is int cs && cs >= 0 && cs <= 2)
                     {
                         var cb = (BrowserPane.CloseBehavior)cs;
@@ -243,6 +248,7 @@ public partial class MainWindow : Window
                 Right = RightPane.GetTabUrls(),
                 ActivateNewTab = LeftPane.ActivateNewTab,
                 DedupPopupTabs = LeftPane.DedupPopupTabs,
+                PasswordAutofill = LeftPane.PasswordAutofill,
                 CloseSequence = (int)LeftPane.CloseSequence
             };
             File.WriteAllText(SessionFile, JsonSerializer.Serialize(state));
@@ -283,6 +289,7 @@ public partial class MainWindow : Window
         public List<string> Right { get; set; } = new();
         public bool? ActivateNewTab { get; set; }
         public bool? DedupPopupTabs { get; set; }
+        public bool? PasswordAutofill { get; set; }
         public int? CloseSequence { get; set; }
     }
 }

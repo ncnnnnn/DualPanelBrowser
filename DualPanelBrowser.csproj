@@ -9,9 +9,28 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>DualPanelBrowser</AssemblyName>
     <RootNamespace>DualPanelBrowser</RootNamespace>
-    <Version>1.0.0</Version>
+    <VersionPrefix>1.0.0</VersionPrefix>
     <ApplicationIcon>assets\app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <!-- 第四段修订号取 git 提交总数：1.0.0.<commitCount>；非 git 环境兜底 .0 -->
+  <Target Name="SetRevisionFromGit" BeforeTargets="PrepareForBuild" Condition="'$(GitCommitCount)' == ''">
+    <Exec Command="git rev-list --count HEAD" ConsoleToMSBuild="true" ContinueOnError="true" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitCommitCount" />
+    </Exec>
+  </Target>
+
+  <!-- 版本属性必须在 Target 内（执行阶段）求值，才能读到上一步 Exec 输出的提交数 -->
+  <Target Name="ApplyRevisionVersion" BeforeTargets="PrepareForBuild" DependsOnTargets="SetRevisionFromGit">
+    <PropertyGroup>
+      <GitCommitCount>$([System.String]::Copy('$(GitCommitCount)').Trim())</GitCommitCount>
+      <AssemblyVersion Condition="'$(GitCommitCount)' != ''">$(VersionPrefix).$(GitCommitCount)</AssemblyVersion>
+      <FileVersion Condition="'$(GitCommitCount)' != ''">$(VersionPrefix).$(GitCommitCount)</FileVersion>
+      <AssemblyVersion Condition="'$(GitCommitCount)' == ''">$(VersionPrefix).0</AssemblyVersion>
+      <FileVersion Condition="'$(GitCommitCount)' == ''">$(VersionPrefix).0</FileVersion>
+    </PropertyGroup>
+    <Message Text="Version: $(AssemblyVersion) / $(FileVersion) (commitCount=$(GitCommitCount))" Importance="high" />
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3065.39" />

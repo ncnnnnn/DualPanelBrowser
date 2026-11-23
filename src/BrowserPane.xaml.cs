@@ -107,6 +107,17 @@ public partial class BrowserPane : UserControl
         MiDedup.IsChecked = _dedupPopupTabs;
         MiPwdAutofill.IsChecked = _passwordAutofill;
         SyncCloseMenuChecks();
+        try
+        {
+            var asm = System.Reflection.Assembly.GetExecutingAssembly();
+            var fvi = System.Diagnostics.FileVersionInfo.GetVersionInfo(asm.Location);
+            var ver = asm.GetName().Version;
+            VersionLabel.Text = ver != null
+                ? $"v{ver.Major}.{ver.Minor}.{ver.Build}.{ver.Revision}"
+                : $"v{fvi.FileVersion}";
+            VersionLabel.ToolTip = fvi.ProductVersion;
+        }
+        catch (Exception ex) { Trace($"version label skip {ex.GetType().Name}"); }
         Tabs.SelectionChanged += (_, _) =>
         {
             var wv = Current;

@@ -150,6 +150,7 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock x:Name="StatusLeft" VerticalAlignment="Center" Margin="0,0,8,0" FontSize="12" Foreground="#888"/>
                     <StackPanel x:Name="ExtBar" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBlock x:Name="VersionLabel" VerticalAlignment="Center" Margin="0,0,8,0" FontSize="12" Foreground="#AAA"/>
                 </StackPanel>
             </Grid>
         </Border>

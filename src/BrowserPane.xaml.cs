@@ -835,7 +835,7 @@ public partial class BrowserPane : UserControl
         catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { }
         if (wasCurrent)
         {
-            var target = ResolveCloseTarget(idx, origin);
+            var target = ResolveCloseTarget(tab, idx, origin);
             if (target != null)
             {
                 Tabs.SelectedItem = target;
@@ -851,15 +851,35 @@ public partial class BrowserPane : UserControl
     }
 
     /// <summary>
-    ///     关闭当前标签后该选谁：优先回到派生来源标签，否则按设置取左邻 / 右邻 / 末尾。
+    ///     关闭当前标签后该选谁，优先级：
+    ///     1. 同组兄弟：同一派生来源、仍存活的其他标签，在兄弟里按设置取左邻 / 右邻 / 末尾；
+    ///     2. 组内已关完，再回到派生来源标签；
+    ///     3. 来源为空或已死，按设置取左邻 / 右邻 / 末尾兜底。
     ///     默认左邻，对齐 GreenBrowser 的 CloseSequence=2。
     /// </summary>
-    private TabItem? ResolveCloseTarget(int closedIndex, TabItem? origin)
+    private TabItem? ResolveCloseTarget(TabItem closedTab, int closedIndex, TabItem? origin)
     {
-        if (origin != null && Tabs.Items.Contains(origin) && _tabWv.ContainsKey(origin))
-            return origin;
         int count = Tabs.Items.Count;
         if (count == 0) return null;
+
+        // 1. 同组兄弟：与被关标签同一来源、仍存活、且不是它自身
+        var siblings = _tabOrigin
+            .Where(kv => ReferenceEquals(kv.Value, origin)
+                      && Tabs.Items.Contains(kv.Key) && _tabWv.ContainsKey(kv.Key)
+                      && !ReferenceEquals(kv.Key, closedTab))
+            .Select(kv => kv.Key)
+            .ToList();
+        if (siblings.Count > 0)
+        {
+            var sib = PickSibling(siblings, closedIndex);
+            if (sib != null) return sib;
+        }
+
+        // 2. 组内已空，回来源标签
+        if (origin != null && Tabs.Items.Contains(origin) && _tabWv.ContainsKey(origin))
+            return origin;
+
+        // 3. 兜底邻接
         int i = _closeBehavior switch
         {
             CloseBehavior.Last => count - 1,
@@ -867,6 +887,35 @@ public partial class BrowserPane : UserControl
             _ => Math.Max(closedIndex - 1, 0)
         };
         return Tabs.Items[i] as TabItem;
+    }
+
+    /// <summary>
+    ///     在同组兄弟候选里按关闭顺序设置挑一个：左邻取左侧最近，右邻取右侧最近，末尾取最后一个。
+    /// </summary>
+    private TabItem? PickSibling(List<TabItem> siblings, int closedIndex)
+    {
+        var ordered = siblings
+            .Select(t => new { Tab = t, Idx = Tabs.Items.IndexOf(t) })
+            .Where(x => x.Idx >= 0)
+            .OrderBy(x => x.Idx)
+            .ToList();
+        if (ordered.Count == 0) return null;
+
+        switch (_closeBehavior)
+        {
+            case CloseBehavior.Last:
+                return ordered[^1].Tab;
+            case CloseBehavior.Next:
+            {
+                var right = ordered.FirstOrDefault(x => x.Idx > closedIndex);
+                return right != null ? right.Tab : ordered[^1].Tab;
+            }
+            default:
+            {
+                var left = ordered.LastOrDefault(x => x.Idx < closedIndex);
+                return left != null ? left.Tab : ordered[0].Tab;
+            }
+        }
     }
 
     public void CloseCurrent()

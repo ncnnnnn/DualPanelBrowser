@@ -16,7 +16,7 @@
 | 链接落点 | 当前页（`LinkInNewWindow=0`） | 当前页；`window.open`/`target=_blank` 一律新标签 | ⏳ 落点开关/右键三态未做；重复 URL 去重已做 |
 | 后台打开 | 支持，默认后台（`ActiveNew=0`） | 一律前台 | ✅ 已实现（默认仍为前台，可切换） |
 | 失败重试 | **无自动重试** | 无 | ⬜ 未做（属新增设计） |
-| 关闭回退 | 默认左邻（`CloseSequence=2`），可配右邻/末尾；回源标签；可撤销 | 依赖 WPF `TabControl` 默认（右邻） | ⏳ 左邻/右邻/末尾 + 来源标签已做；撤销栈未做 |
+| 关闭回退 | 默认左邻（`CloseSequence=2`），可配右邻/末尾；回源标签；可撤销 | 左邻/右邻/末尾可配；同组兄弟优先，组内关完再回来源 | ⏳ 分组回退已做；撤销栈未做 |
 | 空白标签复用 | 有（`FilteBlank`，默认关） | 无 | ⬜ 未做 |
 | 弹窗/重复过滤 | 四类过滤器默认全开 | 仅扩展页导航拦截 | ⏳ 链接去重已做；四类过滤器未做 |
 
@@ -184,23 +184,26 @@
 ### 路线 B 设计
 
 1. 关闭前记录：`(index, sourceTab, sourcePane)`。`AdoptTab` / 跨面板拖拽 / 弹窗派生时把来源写入 `_tabOrigin[tab]`。
-2. 关闭后显式计算目标并 `Tabs.SelectedItem = target`，规则与 GreenBrowser 一致：
-   - 有来源标签且来源仍存在 → 回来源；
-   - 否则按设置：`pre`（默认，`index-1`，下限 0）/ `next`（`index`，上限 `Count-1`）/ `last`（`Count-1`）。
+2. 关闭后显式计算目标并 `Tabs.SelectedItem = target`，优先级：
+   - **同组兄弟优先**：与被关标签同一来源、仍存活的其他派生标签，在兄弟池里按设置取左邻 / 右邻 / 末尾；
+   - **组内关完回来源**：同组兄弟已全部关闭、来源仍存活 → 回来源标签；
+   - **兜底邻接**：来源为空或已死，按设置 `pre`（默认，`index-1`，下限 0）/ `next`（`index`，上限 `Count-1`）/ `last`（`Count-1`）。
+   - 设计意图：A 后台开出 B、C、D 后，关闭 B/C/D 时在兄弟间切换，不逐个弹回 A；整组关完才回 A。
 3. 设置项 `关闭标签后切换：左侧 / 右侧 / 最后一个`，默认左侧。
 4. 撤销关闭：环形栈 `MAX_UNDO`（建议 20），保留 URL + 标题 + 原索引；`Ctrl+Shift+T` 与右键"恢复关闭的标签"恢复，恢复位置按原索引（超出则追加末尾）。
 5. 焦点归属：关闭后焦点给新选中标签的**页面**（`wv.Focus()`），不抢地址栏；`CloseTab` 的 `SelectionChanged` 需抑制地址栏聚焦。
 6. 最后一个标签：保持现状（清空内容而非关窗）作为默认，与 `KeepOnePage` 语义对齐；可加设置项允许关到底后自动开新空白标签（对应 `KeepOnePage` 开启时 `ID_FILE_NEW_BLANK` 的行为，`Src\ChildFrm.cpp:241-242`）。
 
-#### 已实现：关闭回退（来源标签优先 + 可配顺序）✅
+#### 已实现：关闭回退（同组兄弟优先 + 组内关完回来源 + 可配顺序）✅
 
-- 代码：`src\BrowserPane.xaml.cs` `CloseTab` + `ResolveCloseTarget`；`_tabOrigin` 记录派生来源（`NewWindowRequested` 时传入 `origin`），`DetachTab` / `AdoptTab` 跨面板时清除。
+- 代码：`src\BrowserPane.xaml.cs` `CloseTab` + `ResolveCloseTarget` + `PickSibling`；`_tabOrigin` 记录派生来源（`NewWindowRequested` 时传入 `origin`），`DetachTab` / `AdoptTab` 跨面板时清除。
+- 回退优先级：同组兄弟（同一 `origin`、仍存活的其他标签）按设置挑一个 → 无兄弟再回来源 → 来源为空或已死走兜底邻接。
+- 兄弟选择：`Previous` 取左侧最近兄弟（无则右侧第一个）；`Next` 取右侧最近兄弟（无则左侧最后一个）；`Last` 取兄弟中最后一个。
 - 顺序：`CloseBehavior.Previous`（默认，左邻）/ `Next` / `Last`，由 `CloseSequence` 属性控制，菜单三选一，写入 `session.json`。
 - 只在被关标签是当前选中时重选；关闭后台标签不动当前页。
 - 附带修复：`CloseTab` 原实现 `_tabUrls.Remove(wv!)` 在标签已不在 `_tabWv` 时会以 null 为键抛 `ArgumentNullException`，改为先 `TryGetValue` 守卫并提前返回。
-- 验证：
-  - 左邻：`CloseTab entry idx=1 count=2 current=True` → `CloseTab reselect idx=0 origin=no`。
-  - 来源优先：从第 1 个标签派生新标签（idx=2）后关闭 → `CloseTab reselect idx=0 origin=yes`，未按左邻去 idx=1。
+- 行为示例：A 后台开出 B、C、D（顺序 A-B-C-D），默认左邻下关 B → 切 C，关 C → 切 D，关 D → 组内已空回 A；不再出现关 B/C/D 逐个弹回 A。
+- 验证（待补运行时实测）：旧版"来源优先"单标签派生场景已验证；分组兄弟切换需启动实例按上述序列复核日志与选中项。
 
 
 ---
@@ -223,7 +226,8 @@
    └─ 重建 → 同 TabItem 换新 WebView2 重放 URL → [前台/后台加载中]
 
 [关闭] CloseTab
-   ├─ 有来源标签且存在 → 选中来源
+   ├─ 同组兄弟存在 → 兄弟池按顺序设置选一个
+   ├─ 无兄弟且来源存在 → 选中来源
    ├─ 否则按顺序设置 → 左邻 / 右邻 / 末尾
    ├─ 写入撤销栈（URL+标题+索引）
    └─ 仅剩 1 个 → 清空内容（或按设置自动补空白标签）
@@ -237,8 +241,8 @@
 
 1. **后台标签** ✅：`AddTab(url, activate)`，Ctrl/⌘+点击后台打开，菜单可切默认前后台。
    - 验收（已通过）：后台打开时当前标签不变、地址栏文本不变；新标签在标签栏出现、标题随后更新、页面已导航完成。
-2. **关闭回退左邻 + 来源标签** ✅：替换 WPF 默认选中，顺序可配。
-   - 验收（已通过）：从 A 派生 D，关闭 D 回到 A；无来源时 `[A,B,C]` 关 B 选 A、关 C 选 B。
+2. **关闭回退：同组兄弟优先 + 来源兜底 + 顺序可配** ✅：替换 WPF 默认选中，顺序可配。
+   - 验收（待运行时复核）：A 派生 B/C/D，关闭 B/C/D 时在兄弟间切换，整组关完才回 A；无来源时 `[A,B,C]` 关 B 选 A、关 C 选 B。
 3. **重复 URL 去重** ✅：同 URL 已有标签时激活而非新开，限网页新链接通道。
    - 验收（已通过）：连点两次同一链接只新增一个标签；再次请求切到已存在标签。
 

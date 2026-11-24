@@ -174,6 +174,29 @@ public partial class BrowserPane : UserControl
         return null;
     }
 
+    /// <summary>
+    ///     标签导航键分流：焦点不在标签栏时，把 Home/End/方向键/PageUp/PageDown 还给网页，
+    ///     避免 WPF TabControl 内置导航把按键截成切换标签。
+    /// </summary>
+    private void Tabs_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        bool navKey = e.Key is Key.Home or Key.End
+            or Key.Left or Key.Right or Key.Up or Key.Down
+            or Key.PageUp or Key.PageDown;
+        if (!navKey) return;
+
+        var focused = FocusManager.GetFocusedElement(this) as DependencyObject;
+
+        // 文本框（地址栏）保留原生光标移动行为
+        if (focused is System.Windows.Controls.TextBox) return;
+
+        // 焦点在标签头：放行 TabControl 默认标签导航
+        if (FindParent<TabItem>(focused) != null) return;
+
+        // 页面 / 按钮 / 面板容器：抑制壳侧导航，按键留给 WebView2
+        e.Handled = true;
+    }
+
     public WebView2? Current
     {
         get

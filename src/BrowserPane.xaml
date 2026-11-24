@@ -154,7 +154,7 @@
                 </StackPanel>
             </Grid>
         </Border>
-        <TabControl x:Name="Tabs" Background="White">
+        <TabControl x:Name="Tabs" Background="White" PreviewKeyDown="Tabs_PreviewKeyDown">
             <TabControl.Template>
                 <ControlTemplate TargetType="TabControl">
                     <Grid>
